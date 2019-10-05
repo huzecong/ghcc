@@ -1,20 +1,26 @@
+import argparse
 import json
-import os
-import shutil
-import subprocess
+import multiprocessing
 import time
 
 import requests
 
-CLONE_FOLDER = "repos/"
-PER_PAGE = 40
+import ghcc
+from ghcc.logging import log
+from ghcc.repo import CloneErrorType, CloneResult, clone
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--clone-folder", type=str, default="repos/")
+parser.add_argument("--repos-per-page", type=int, default=100)
+parser.add_argument("--n-procs", type=int, default=32)
+args = parser.parse_args()
 
 
-def get_repos(n_repos, skip_counts=None):
-    page_num = 1 if skip_counts is None else skip_counts // 40
+def get_repos(n_repos=None, skip_counts=None):
+    page_num = 1 if skip_counts is None else skip_counts // args.repos_per_page
     repo_count = 0
-    start_idx = 0 if skip_counts is None else skip_counts % 40
-    while repo_count < n_repos:
+    start_idx = 0 if skip_counts is None else skip_counts % args.repos_per_page
+    while n_repos is None or repo_count < n_repos:
         try:
             response = requests.get(
                 "https://api.github.com/search/repositories",
@@ -22,59 +28,75 @@ def get_repos(n_repos, skip_counts=None):
                     "q": "language:C",
                     "sort": "stars",
                     "page": page_num,
-                    "per_page": PER_PAGE,
+                    "per_page": args.repos_per_page,
                 }.items()),
                 # headers={
                 #     "Authorization": "token b25514f16dc55e21df8b875a4209d9a76de20ae9",
                 # }
             )
         except requests.exceptions.RequestException:
+            log("GitHub API failed; retry after 10s", "warning")
             time.sleep(10)
             continue
-        # import pdb; pdb.set_trace()
         j = json.loads(response.content)
+        try:
+            if n_repos is None:
+                n_repos = j["total_count"]
+            repo_slice = j["items"][start_idx:(start_idx + n_repos - repo_count)]
+        except KeyError:
+            if "message" in j:
+                log("GitHub API failed with message: " + j["message"] + "; retry after 10s", "warning")
+            else:
+                log("GitHub API failed; retry after 10s", "warning")
+            time.sleep(10)
+            continue
 
-        for repo in j["items"][start_idx:]:
-            yield repo
-            repo_count += 1
-            if repo_count >= n_repos:
-                break
+        yield repo_slice
+        repo_count += len(repo_slice)
         page_num += 1
         start_idx = 0
 
 
-def clone_repo(repo, verbose=False, skip_if_exists=False):
-    url = repo["clone_url"]
-    full_name = repo["full_name"]
-    # clone_folder / owner_name / repo_name
-    folder_path = os.path.join(CLONE_FOLDER, full_name)
-    if os.path.exists(folder_path):
-        if not skip_if_exists:
-            shutil.rmtree(folder_path)
-        else:
-            print("skipped.")
-            return False
+def log_output(result: CloneResult):
+    full_name = f"{result.repo_owner}/{result.repo_name}"
+    if result.success:
+        log(f"{full_name} successfully cloned ({result.time:.2f}s)", "success")
+    elif result.error_type is CloneErrorType.FolderExists:
+        log(f"{full_name} skipped because folder exists", "warning")
+    else:
+        log(f"Failed to clone {full_name}: {result.output}", "error")
 
-    output = subprocess.check_output(
-        ["git", "clone", "--depth=1", url, folder_path],
-        stderr=subprocess.STDOUT)
-    if verbose:
-        print(output)
-    return True
+
+def clone_repo(repo):
+    url = repo["clone_url"]
+    default_branch = repo["default_branch"]
+    return clone(url, args.clone_folder, default_branch=default_branch)
 
 
 def main():
-    meta_file = open("metadata.jsonl", "w")
+    log("Crawling starts...", "warning")
+    repo_count = 0
+    with open("metadata.jsonl", "r") as f:
+        repos = [json.loads(line) for line in f if line]
+    pool = multiprocessing.Pool(processes=args.n_procs)
+    for result in pool.imap_unordered(clone_repo, repos):
+        repo_count += 1
+        log_output(result)
+
+    meta_file = open("metadata.jsonl", "a")
     try:
-        for idx, repo in enumerate(get_repos(4000)):
-            print(f"{idx}: Cloning {repo['full_name']}...", end=' ', flush=True)
-            meta_file.write(json.dumps(repo) + '\n')
+        for repos in get_repos(None, skip_counts=len(repos)):
+            for repo in repos:
+                meta_file.write(json.dumps(repo) + '\n')
             meta_file.flush()
-            if clone_repo(repo, skip_if_exists=True):
-                print("done.")
+            for result in pool.imap_unordered(clone_repo, repos):
+                repo_count += 1
+                log_output(result)
     finally:
         meta_file.close()
+        pool.close()
 
 
 if __name__ == '__main__':
+    ghcc.utils.register_pdb_excepthook()
     main()
