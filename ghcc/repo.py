@@ -5,6 +5,8 @@ import time
 from enum import Enum, auto
 from typing import NamedTuple, Optional
 
+from ghcc.utils import run_command
+
 __all__ = [
     "CloneErrorType",
     "CloneResult",
@@ -79,19 +81,19 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
         try:
             try_branch = default_branch or "master"
             # Try cloning only 'master' branch, but it's possible there's no branch named 'master'.
-            subprocess.check_output(
+            run_command(
                 ["git", "clone", "--depth=1", f"--branch={try_branch}", "--single-branch", url, folder_path],
-                env=env, stderr=subprocess.STDOUT, timeout=timeout)
+                env=env, timeout=timeout)
             return
         except subprocess.CalledProcessError as err:
             expected_msg = b"fatal: Remote branch master not found in upstream origin"
-            if default_branch is not None or expected_msg not in err.output:
+            if default_branch is not None or (err.output is not None and expected_msg not in err.output):
                 # If `default_branch` is specified, always re-raise the exception.
                 raise err
         # 'master' branch doesn't exist; do a shallow clone of all branches.
-        subprocess.check_output(
+        run_command(
             ["git", "clone", "--depth=1", url, folder_path],
-            env=env, stderr=subprocess.STDOUT)
+            env=env, timeout=timeout)
 
     try:
         try_clone()
@@ -99,8 +101,9 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
         elapsed_time = end_time - start_time
         return CloneResult(repo_owner, repo_name, success=True, time=elapsed_time)
     except subprocess.CalledProcessError as e:
-        missing_msg = b"fatal: could not read Username for 'https://github.com': terminal prompts disabled"
-        if e.output is not None and missing_msg in e.output:
+        no_ssh_expected_msg = b"fatal: could not read Username for 'https://github.com': terminal prompts disabled"
+        ssh_expected_msg = b"remote: Repository not found."
+        if e.output is not None and (no_ssh_expected_msg in e.output or ssh_expected_msg in e.output):
             return CloneResult(repo_owner, repo_name, error_type=CloneErrorType.PrivateOrNonexistent)
         else:
             return CloneResult(repo_owner, repo_name, error_type=CloneErrorType.Unknown, captured_output=e.output)
