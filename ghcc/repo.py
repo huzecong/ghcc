@@ -3,7 +3,7 @@ import shutil
 import subprocess
 import time
 from enum import Enum, auto
-from typing import Optional, NamedTuple
+from typing import NamedTuple, Optional
 
 __all__ = [
     "CloneErrorType",
@@ -28,14 +28,39 @@ class CloneResult(NamedTuple):
     captured_output: Optional[bytes] = None
 
 
-def clone(url: str, clone_folder: str, default_branch: Optional[str] = None,
+def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Optional[str] = None,
           timeout: Optional[int] = None, skip_if_exists: bool = True) -> CloneResult:
+    r"""Clone a repository on GitHub, for instance, ``torvalds/linux``.
+
+    :param repo_owner: Name of the repository owner, e.g., ``torvalds``.
+    :param repo_name: Name of the repository, e.g., ``linux``.
+    :param clone_folder: Path to the folder where the repository will be stored. The actual destination folder will be
+        ``clone_folder/repo_owner/repo_name``, e.g., ``clone_folder/torvalds/linux``.
+    :param default_branch: Name of the default branch of the repository. Cloning behavior differs slightly depending on
+        whether the argument is ``None``. If ``None``, then the following happens:
+
+        1. Attempts a shallow clone on only the ``master`` branch.
+        2. If error occurs, attempts a shallow clone for all branches.
+        3. If error still occurs, raise the error.
+
+        If not ``None``, then the following happens:
+
+        1. Attempts a shallow clone on only the default branch.
+        2. If error occurs, raise the error.
+    :param timeout: Maximum time allowed for cloning, in seconds. Defaults to ``None`` (unlimited time).
+    :param skip_if_exists: Whether to skip cloning if the destination folder already exists. If ``False``, the folder
+        will be deleted.
+
+    :return: An instance of :class:`CloneResult` indicating the result. Fields ``repo_owner``, ``repo_name``, and
+        ``success`` will always be not ``None``.
+
+        - If cloning succeeded, the field ``time`` is also not ``None``.
+        - If cloning failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
+    """
     start_time = time.time()
-    assert url.endswith(".git")
-    repo_owner, repo_name = url[:-4].split("/")[-2:]
-    full_name = "/".join(url.split("/")[-2:])
-    # clone_folder / owner_name / repo_name
-    folder_path = os.path.join(clone_folder, full_name)
+    url = f"https://github.com/{repo_owner}/{repo_name}.git"
+    # clone_folder / repo_owner / repo_name
+    folder_path = os.path.join(clone_folder, repo_owner, repo_name)
     if os.path.exists(folder_path):
         if not skip_if_exists:
             shutil.rmtree(folder_path)

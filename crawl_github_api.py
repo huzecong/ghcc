@@ -1,3 +1,9 @@
+r"""Clone GitHub repositories using GitHub APIs.
+
+A major drawback of this approach is that the search API only returns the first 1,000 results.
+So this is basically unusable.
+"""
+
 import argparse
 import json
 import multiprocessing
@@ -98,5 +104,5 @@ def main():
 
 
 if __name__ == '__main__':
-    ghcc.utils.register_pdb_excepthook()
+    ghcc.utils.register_ipython_excepthook()
     main()

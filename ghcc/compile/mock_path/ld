@@ -1,0 +1,4 @@
+#!/usr/bin/env python
+r"""A fake `ld` implementation that does nothing.
+"""
+# TODO
