@@ -23,10 +23,10 @@ class CompileTest(unittest.TestCase):
         self.assertEqual([directory], makefiles)
 
         # Try compile.
+        # NOTE: This test will fail under macOS, since file types are different under macOS (Mach-O).
         result = ghcc.make(makefiles[0])
         self.assertTrue(result.success, msg=result.captured_output)
-        self.assertEqual([
-            "libuwimg.a",
+        target_elfs = [
             "libuwimg.so",
             "obj/args.o",
             "obj/classifier.o",
@@ -43,4 +43,6 @@ class CompileTest(unittest.TestCase):
             "obj/resize_image.o",
             "obj/test.o",
             "uwimg",
-        ], result.elf_files, msg=result.captured_output)
+        ]
+        self.assertEqual({os.path.join(directory, file) for file in target_elfs},
+                         set(result.elf_files), msg=result.captured_output)

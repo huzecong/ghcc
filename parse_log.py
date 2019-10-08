@@ -29,22 +29,8 @@ def get_repo(msg: List[str]) -> Tuple[str, str]:
     raise ValueError(f"Cannot find repository name in message: '{' '.join(msg)}'")
 
 
-def get_folder_size(path: str) -> int:
-    r"""Get disk usage of given path in bytes.
-
-    Credit: https://stackoverflow.com/a/25574638/4909228
-    """
-    return int(subprocess.check_output(['du', '-bs', path]).split()[0].decode('utf-8'))
-
-
-def get_file_lines(path: str) -> int:
-    r"""Get number of lines in text file.
-    """
-    return int(subprocess.check_output(['wc', '-l', path]).decode('utf-8'))
-
-
 def main() -> None:
-    total_lines = get_folder_size(args.log_file)
+    total_lines = ghcc.utils.get_folder_size(args.log_file)
     with contextlib.closing(Database()) as db, open(args.log_file, "r") as f:
         for line_no, line in enumerate(tqdm.tqdm(f, total=total_lines)):
             if not line:
@@ -57,7 +43,7 @@ def main() -> None:
                 print(f"Line {line_no + 1}: Cannot find repo name in '{line.strip()}'")
                 continue
             if status == "INFO:" and "successfully" in msg:
-                size = get_folder_size(os.path.join(args.clone_folder, repo_owner, repo_name))
+                size = ghcc.utils.get_folder_size(os.path.join(args.clone_folder, repo_owner, repo_name))
                 db.add_repo(repo_owner, repo_name, clone_successful=True, repo_size=size)
             else:
                 db.add_repo(repo_owner, repo_name, clone_successful=False)

@@ -36,23 +36,22 @@ def main():
     if out_file is None:
         out_file = 'a.out'
 
-    known = []
+    known_args = []
     if args.c:
-        known.append("-c")
+        known_args.append("-c")
 
-    sys.stderr.write("Mock GCC\n")
     try:
         gcc = "gcc"  # "gcc-4.7"
         # When multiple -O options are specified, the last one takes precedence.
-        gcc_args = ["/usr/bin/" + gcc] + known + unknown_args + ["-o", out_file, "-O0", "-g"]
+        gcc_args = ["/usr/bin/" + gcc] + known_args + unknown_args + ["-o", out_file, "-O0", "-g"]
+        sys.stderr.write("Mock GCC: " + ' '.join(gcc_args) + "\n")
         # Redirecting to a pipe could prevent GCC producing colored output.
         process = subprocess.Popen(gcc_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         process.wait()
         output = process.stdout.read().decode('utf-8')
         sys.stderr.write(output)
         if process.returncode != 0:
-            sys.stderr.write(f"Mock GCC: Return code: {process.returncode}\n")
-            sys.stderr.write("Arguments: " + ' '.join(gcc_args) + '\n')
+            sys.stderr.write(f"Return code: {process.returncode}\n")
             exit(process.returncode)
     except Exception as e:
         sys.stderr.write(f"Mock GCC: Exception: {e}\n")

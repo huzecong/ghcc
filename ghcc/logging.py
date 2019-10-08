@@ -105,7 +105,7 @@ def set_log_file(path: str, fmt: str = "%(asctime)s %(levelname)s: %(message)s")
 
     handler = MultiprocessingFileHandler(path, mode="a")
     handler.setFormatter(logging.Formatter(fmt))
-    logger.addHandler(logging.FileHandler(path, mode="a"))
+    logger.addHandler(handler)
 
 
 def log(msg: str, level: str = "info") -> None:

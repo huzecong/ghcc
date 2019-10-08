@@ -10,6 +10,7 @@ from ghcc.utils import run_command
 __all__ = [
     "CloneErrorType",
     "CloneResult",
+    "clean",
     "clone"
 ]
 

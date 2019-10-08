@@ -37,9 +37,14 @@ class CompileErrorType(Enum):
 
 class CompileResult(NamedTuple):
     success: bool
+    elf_files: List[str]  # list of paths to ELF files
     error_type: Optional[CompileErrorType] = None
-    elf_files: List[str] = []  # list of paths to ELF files
     captured_output: Optional[str] = None
+
+
+def _make_result(success: bool = False, error_type: Optional[CompileErrorType] = None,
+                 captured_output: Optional[str] = None) -> CompileResult:
+    return CompileResult(success, elf_files=[], error_type=error_type, captured_output=captured_output)
 
 
 def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
@@ -70,17 +75,18 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
             if timeout is not None:
                 timeout = max(1, timeout - int(end_time - start_time))
 
-        # Force make all targets, and ignore errors.
-        run_command(["make", "--always-make", "--keep-going"], env=env, cwd=directory, timeout=timeout)
-        result = CompileResult(True)
+        # Make while ignoring errors.
+        # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
+        run_command(["make", "--keep-going"], env=env, cwd=directory, timeout=timeout)
+        result = _make_result(True)
 
     except subprocess.TimeoutExpired as e:
         # Even if exceptions occur, we still check for ELF files, just in case.
-        result = CompileResult(False, error_type=CompileErrorType.Timeout, captured_output=e.output)
+        result = _make_result(error_type=CompileErrorType.Timeout, captured_output=e.output)
     except OSError as e:
-        result = CompileResult(False, error_type=CompileErrorType.Unknown, captured_output=str(e))
+        result = _make_result(error_type=CompileErrorType.Unknown, captured_output=str(e))
     except subprocess.CalledProcessError as e:
-        result = CompileResult(False, error_type=CompileErrorType.CompileFailed, captured_output=e.output)
+        result = _make_result(error_type=CompileErrorType.CompileFailed, captured_output=e.output)
 
     try:
         # Use Git to find all unversioned files -- these would be the products of compilation.
@@ -88,17 +94,17 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
         diff_files = [
             # files containing escape characters are in quotes
             os.path.join(directory, file if file[0] != '"' else file[1:-1])
-            for file in output.strip().decode('unicode_escape').split("\n")]  # file names could contain spaces
+            for file in output.decode('unicode_escape').split("\n") if file]  # file names could contain spaces
 
         # Inspect each file and find ELF files.
         for file in diff_files:
             output = subprocess.check_output(["file", file], timeout=10).decode('utf-8')
-            output = output[output.find(' '):]  # first part is file name
+            output = output[len(file):]  # first part is file name
             if "ELF" in output:
                 result.elf_files.append(file)
     except subprocess.TimeoutExpired as e:
-        return CompileResult(False, error_type=CompileErrorType.Timeout, captured_output=e.output)
+        return _make_result(error_type=CompileErrorType.Timeout, captured_output=e.output)
     except subprocess.CalledProcessError as e:
-        return CompileResult(False, error_type=CompileErrorType.Unknown, captured_output=e.output)
+        return _make_result(error_type=CompileErrorType.Unknown, captured_output=e.output)
 
     return result

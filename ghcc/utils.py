@@ -5,6 +5,8 @@ from typing import Any, Dict, NamedTuple, Type, TypeVar, List, Optional
 
 __all__ = [
     "run_command",
+    "get_folder_size",
+    "get_file_lines",
     "register_ipython_excepthook",
     "to_dict",
     "to_namedtuple",
@@ -29,6 +31,20 @@ def run_command(args: List[str], env: Optional[Dict[bytes, bytes]] = None, cwd: 
         if return_output:
             f.seek(0)
             return f.read()
+
+
+def get_folder_size(path: str) -> int:
+    r"""Get disk usage of given path in bytes.
+
+    Credit: https://stackoverflow.com/a/25574638/4909228
+    """
+    return int(subprocess.check_output(['du', '-bs', path]).split()[0].decode('utf-8'))
+
+
+def get_file_lines(path: str) -> int:
+    r"""Get number of lines in text file.
+    """
+    return int(subprocess.check_output(['wc', '-l', path]).decode('utf-8'))
 
 
 def register_ipython_excepthook() -> None:
