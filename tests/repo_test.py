@@ -15,15 +15,16 @@ class RepoCloneTest(unittest.TestCase):
     def test_clone(self):
         # Clone an existing repo.
         result = ghcc.clone("huzecong", "memes", clone_folder=self.tempdir.name)
-        self.assertTrue(result.success)
-        self.assertTrue(os.path.exists(os.path.join(self.tempdir.name, "huzecong", "memes", "Get Memes.scpt")))
+        self.assertTrue(result.success, msg=result.captured_output)
+        self.assertTrue(os.path.exists(os.path.join(self.tempdir.name, "huzecong", "memes", "Get Memes.scpt")),
+                        msg=result.captured_output)
 
         # Non-existent repo.
         result = ghcc.clone("huzecong", "non-existent-repo", clone_folder=self.tempdir.name)
-        self.assertFalse(result.success)
-        self.assertEqual(ghcc.CloneErrorType.PrivateOrNonexistent, result.error_type)
+        self.assertFalse(result.success, msg=result.captured_output)
+        self.assertEqual(ghcc.CloneErrorType.PrivateOrNonexistent, result.error_type, msg=result.captured_output)
 
         # Timeout
         result = ghcc.clone("torvalds", "linux", clone_folder=self.tempdir.name, timeout=1)
-        self.assertFalse(result.success)
-        self.assertEqual(ghcc.CloneErrorType.Timeout, result.error_type)
+        self.assertFalse(result.success, msg=result.captured_output)
+        self.assertEqual(ghcc.CloneErrorType.Timeout, result.error_type, msg=result.captured_output)

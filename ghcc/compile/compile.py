@@ -4,6 +4,7 @@ import time
 from enum import Enum, auto
 from typing import List, NamedTuple, Optional
 
+from ghcc.repo import clean
 from ghcc.utils import run_command
 from . import mock_path
 
@@ -58,7 +59,7 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
 
     try:
         # Clean unversioned files by previous compilations.
-        run_command(["git", "clean", "-f", "-x", "-d"], cwd=directory, timeout=timeout)
+        clean(directory)
 
         # Try running `./configure` if it exists.
         if os.path.isfile(os.path.join(directory, "configure")):
@@ -70,14 +71,16 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
                 timeout = max(1, timeout - int(end_time - start_time))
 
         # Force make all targets, and ignore errors.
-        output = run_command(["make", "--always-make", "--keep-going"], env=env, cwd=directory, timeout=timeout, return_output=True)
-        print("Output:", output.decode('utf-8'))
+        run_command(["make", "--always-make", "--keep-going"], env=env, cwd=directory, timeout=timeout)
+        result = CompileResult(True)
+
     except subprocess.TimeoutExpired as e:
-        return CompileResult(False, error_type=CompileErrorType.Timeout, captured_output=e.output)
+        # Even if exceptions occur, we still check for ELF files, just in case.
+        result = CompileResult(False, error_type=CompileErrorType.Timeout, captured_output=e.output)
     except OSError as e:
-        return CompileResult(False, error_type=CompileErrorType.Unknown, captured_output=str(e))
+        result = CompileResult(False, error_type=CompileErrorType.Unknown, captured_output=str(e))
     except subprocess.CalledProcessError as e:
-        return CompileResult(False, error_type=CompileErrorType.CompileFailed, captured_output=e.output)
+        result = CompileResult(False, error_type=CompileErrorType.CompileFailed, captured_output=e.output)
 
     try:
         # Use Git to find all unversioned files -- these would be the products of compilation.
@@ -88,15 +91,14 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
             for file in output.strip().decode('unicode_escape').split("\n")]  # file names could contain spaces
 
         # Inspect each file and find ELF files.
-        elf_files = []
         for file in diff_files:
             output = subprocess.check_output(["file", file], timeout=10).decode('utf-8')
             output = output[output.find(' '):]  # first part is file name
             if "ELF" in output:
-                elf_files.append(file)
+                result.elf_files.append(file)
     except subprocess.TimeoutExpired as e:
         return CompileResult(False, error_type=CompileErrorType.Timeout, captured_output=e.output)
     except subprocess.CalledProcessError as e:
         return CompileResult(False, error_type=CompileErrorType.Unknown, captured_output=e.output)
 
-    return CompileResult(True, elf_files=elf_files)
+    return result

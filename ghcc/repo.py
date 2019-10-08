@@ -30,6 +30,14 @@ class CloneResult(NamedTuple):
     captured_output: Optional[bytes] = None
 
 
+def clean(repo_folder: str):
+    r"""Clean all unversioned files in a Git repository.
+
+    :param repo_folder: Path to the Git repository.
+    """
+    run_command(["git", "clean", "-f", "-x", "-d"], cwd=repo_folder)
+
+
 def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Optional[str] = None,
           timeout: Optional[int] = None, skip_if_exists: bool = True) -> CloneResult:
     r"""Clone a repository on GitHub, for instance, ``torvalds/linux``.
