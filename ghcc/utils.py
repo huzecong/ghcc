@@ -12,9 +12,11 @@ __all__ = [
 
 
 def run_command(args: List[str], env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
-                timeout: Optional[int] = None, **kwargs):
+                timeout: Optional[int] = None, return_output: bool = False, **kwargs):
     r"""A wrapper over ``subprocess.check_output`` that prevents deadlock caused by the combination of pipes and
     timeout. Output is redirected into a temporary file and returned only on exceptions.
+
+    :param return_output: If ``True``, the captured output is returned.
     """
     with tempfile.TemporaryFile() as f:
         try:
@@ -24,6 +26,9 @@ def run_command(args: List[str], env: Optional[Dict[bytes, bytes]] = None, cwd: 
             f.seek(0)
             e.output = f.read()
             raise e from None
+        if return_output:
+            f.seek(0)
+            return f.read()
 
 
 def register_ipython_excepthook() -> None:

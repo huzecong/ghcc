@@ -7,8 +7,8 @@ import subprocess
 import os
 
 
-def filter_filenames(unk):
-    return filter(lambda f: f.endswith('.c') or f.endswith('.h'), unk)
+def filter_filenames(args):
+    return [arg for arg in args if arg.endswith('.c') or arg.endswith('.h')]
 
 
 def main():
@@ -23,9 +23,9 @@ def main():
     parser.add_argument('-mlittle-endian', action='store_true')  # ignored
     parser.add_argument('-mapcs', action='store_true')  # ignored
     parser.add_argument('-mno-sched-prolog', action='store_true')  # ignored
-    args, unk = parser.parse_known_args(sys.argv[1:])
+    args, unknown_args = parser.parse_known_args(sys.argv[1:])
 
-    filenames = filter_filenames(unk)
+    filenames = filter_filenames(unknown_args)
     out_file = None
     if args.o:
         out_file = args.o
@@ -49,9 +49,8 @@ def main():
     try:
         # igcc = "arm-linux-gnueabi-gcc"
         gcc = "gcc"  # "gcc-4.7"
-        newarg = ["/usr/bin/" + gcc] + known + unk + ["-o", out_file, "-O0", "-g"]
+        newarg = ["/usr/bin/" + gcc] + known + unknown_args + ["-o", out_file, "-O0", "-g"]
         proc = subprocess.Popen(newarg, stderr=subprocess.PIPE)
-        #  proc = subprocess.Popen(["/usr/bin/gcc"]+unk+["-o",out_file,"-O0","-g"], stderr = subprocess.PIPE)
         proc.wait()
         stderror = proc.stderr.read()
         sys.stderr.write(stderror)

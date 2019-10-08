@@ -54,7 +54,7 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
         will be deleted.
 
     :return: An instance of :class:`CloneResult` indicating the result. Fields ``repo_owner``, ``repo_name``, and
-        ``success`` will always be not ``None``.
+        ``success`` are not ``None``.
 
         - If cloning succeeded, the field ``time`` is also not ``None``.
         - If cloning failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
