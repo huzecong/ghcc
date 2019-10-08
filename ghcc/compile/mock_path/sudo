@@ -1,0 +1,8 @@
+#!/usr/bin/env python
+r"""A fake `sudo` implementation that does not prompt for password and just executes the command.
+"""
+import sys
+import subprocess
+
+if __name__ == '__main__':
+    exit(subprocess.call(sys.argv[1:]))

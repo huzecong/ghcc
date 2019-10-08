@@ -42,9 +42,12 @@ class CompileResult(NamedTuple):
     captured_output: Optional[str] = None
 
 
-def _make_result(success: bool = False, error_type: Optional[CompileErrorType] = None,
+def _make_result(success: bool = False, elf_files: Optional[List[str]] = None,
+                 error_type: Optional[CompileErrorType] = None,
                  captured_output: Optional[str] = None) -> CompileResult:
-    return CompileResult(success, elf_files=[], error_type=error_type, captured_output=captured_output)
+    if elf_files is None:
+        elf_files = []
+    return CompileResult(success, elf_files=elf_files, error_type=error_type, captured_output=captured_output)
 
 
 def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
@@ -83,10 +86,10 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
     except subprocess.TimeoutExpired as e:
         # Even if exceptions occur, we still check for ELF files, just in case.
         result = _make_result(error_type=CompileErrorType.Timeout, captured_output=e.output)
-    except OSError as e:
-        result = _make_result(error_type=CompileErrorType.Unknown, captured_output=str(e))
     except subprocess.CalledProcessError as e:
         result = _make_result(error_type=CompileErrorType.CompileFailed, captured_output=e.output)
+    except OSError as e:
+        result = _make_result(error_type=CompileErrorType.Unknown, captured_output=str(e))
 
     try:
         # Use Git to find all unversioned files -- these would be the products of compilation.
@@ -103,8 +106,10 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
             if "ELF" in output:
                 result.elf_files.append(file)
     except subprocess.TimeoutExpired as e:
-        return _make_result(error_type=CompileErrorType.Timeout, captured_output=e.output)
+        return _make_result(elf_files=result.elf_files, error_type=CompileErrorType.Timeout, captured_output=e.output)
     except subprocess.CalledProcessError as e:
-        return _make_result(error_type=CompileErrorType.Unknown, captured_output=e.output)
+        return _make_result(elf_files=result.elf_files, error_type=CompileErrorType.Unknown, captured_output=e.output)
+    except OSError as e:
+        return _make_result(elf_files=result.elf_files, error_type=CompileErrorType.Unknown, captured_output=str(e))
 
     return result
