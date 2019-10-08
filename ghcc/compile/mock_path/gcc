@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 r"""A fake gcc implementation which records input/output files, adds -O0 flag, and then calls real gcc.
 """
-import sys
 import argparse
-import subprocess
 import os
+import subprocess
+import sys
 
 
 def filter_filenames(args):
@@ -40,36 +40,22 @@ def main():
     if args.c:
         known.append("-c")
 
-    out_path = os.path.abspath(out_file)
-    # TODO: Read this path from ENV
-    out = open("/data2/apjaffe/gcc_logs2/" + out_path.replace("/", "_"), "w")
-    out.write(os.getcwd() + "\n" + out_file + "\n" + str(filenames) + "\n" + " ".join(sys.argv[1:]) + "\n")
-
-    # When multiple -O options are specified, the last one takes precedence
+    sys.stderr.write("Mock GCC\n")
     try:
-        # igcc = "arm-linux-gnueabi-gcc"
         gcc = "gcc"  # "gcc-4.7"
-        newarg = ["/usr/bin/" + gcc] + known + unknown_args + ["-o", out_file, "-O0", "-g"]
-        proc = subprocess.Popen(newarg, stderr=subprocess.PIPE)
-        proc.wait()
-        stderror = proc.stderr.read()
-        sys.stderr.write(stderror)
-        if proc.returncode != 0:
-            print("Args: " + str(newarg))
-            print("RETURN CODE: %d" % proc.returncode)
-        out.write("%d\n" % proc.returncode)
-        with open("/tmp/log", "a") as log:
-            log.write(" ".join(sys.argv) + "\n")
-            log.write(stderror)
-            log.write("Return code: %d\n" % proc.returncode)
-        if proc.returncode != 0:
-            exit(proc.returncode)
+        # When multiple -O options are specified, the last one takes precedence.
+        gcc_args = ["/usr/bin/" + gcc] + known + unknown_args + ["-o", out_file, "-O0", "-g"]
+        # Redirecting to a pipe could prevent GCC producing colored output.
+        process = subprocess.Popen(gcc_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process.wait()
+        output = process.stdout.read().decode('utf-8')
+        sys.stderr.write(output)
+        if process.returncode != 0:
+            sys.stderr.write(f"Mock GCC: Return code: {process.returncode}\n")
+            sys.stderr.write("Arguments: " + ' '.join(gcc_args) + '\n')
+            exit(process.returncode)
     except Exception as e:
-        print(e)
-        print("ERROR OCCURED")
-        out.write(str(e))
-        with open("/tmp/log", "a") as log:
-            log.write(str(e))
+        sys.stderr.write(f"Mock GCC: Exception: {e}\n")
         exit(2)
 
 

@@ -70,7 +70,8 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
                 timeout = max(1, timeout - int(end_time - start_time))
 
         # Force make all targets, and ignore errors.
-        run_command(["make", "--always-make", "--keep-going"], env=env, cwd=directory, timeout=timeout)
+        output = run_command(["make", "--always-make", "--keep-going"], env=env, cwd=directory, timeout=timeout, return_output=True)
+        print("Output:", output.decode('utf-8'))
     except subprocess.TimeoutExpired as e:
         return CompileResult(False, error_type=CompileErrorType.Timeout, captured_output=e.output)
     except OSError as e:
