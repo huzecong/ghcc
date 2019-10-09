@@ -3,6 +3,8 @@ import sys
 import tempfile
 from typing import Any, Dict, NamedTuple, Type, TypeVar, List, Optional
 
+import tenacity
+
 __all__ = [
     "run_command",
     "get_folder_size",
@@ -13,10 +15,16 @@ __all__ = [
 ]
 
 
+@tenacity.retry(retry=tenacity.retry_if_exception_type(OSError), reraise=True,
+                stop=tenacity.stop_after_attempt(5),  # retry 4 times
+                wait=tenacity.wait_random_exponential(multiplier=2, max=60))
 def run_command(args: List[str], env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
                 timeout: Optional[int] = None, return_output: bool = False, **kwargs):
     r"""A wrapper over ``subprocess.check_output`` that prevents deadlock caused by the combination of pipes and
     timeout. Output is redirected into a temporary file and returned only on exceptions.
+
+    In case an OSError occurs, the function will retry for a maximum for 4 times with exponential backoff. If error
+    still occurs, we just throw it up.
 
     :param return_output: If ``True``, the captured output is returned.
     """

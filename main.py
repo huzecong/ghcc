@@ -13,7 +13,6 @@ import multiprocessing
 import os
 import shutil
 import subprocess
-from datetime import datetime
 from typing import Iterator, List, NamedTuple, Optional
 
 import ghcc
@@ -41,7 +40,7 @@ class RepoInfo(NamedTuple):
 class PipelineResult(NamedTuple):
     repo_owner: str
     repo_name: str
-    repo_entry: Optional[ghcc.RepoEntry] = None
+    clone_success: Optional[bool] = None
     makefiles: Optional[List[ghcc.RepoMakefileEntry]] = None
 
 
@@ -67,7 +66,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     archive_path = os.path.join(archive_folder, f"{repo_full_name}.tar.xz")
 
     repo_entry = repo_info.db_result
-    repo_entry_return = None
+    clone_success = None
 
     # Stage 1: Cloning from GitHub.
     if (repo_entry is None or  # not processed
@@ -77,15 +76,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         clone_result = ghcc.clone(
             repo_info.repo_owner, repo_info.repo_name, clone_folder=clone_folder,
             timeout=clone_timeout, skip_if_exists=False)
-        repo_entry_return = repo_entry = {
-            "repo_owner": repo_info.repo_owner,
-            "repo_name": repo_info.repo_name,
-            "clone_time": datetime.now(),
-            "repo_size": -1,
-            "clone_successful": clone_result.success,
-            "compiled": False,
-            "makefiles": []
-        }
+        clone_success = clone_result.success
         if not clone_result.success:
             if clone_result.error_type is CloneErrorType.FolderExists:
                 ghcc.log(f"{repo_full_name} skipped because folder exists", "warning")
@@ -99,69 +90,63 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                 if clone_result.captured_output is not None:
                     msg += f". Captured output: '{clone_result.captured_output}'"
                 ghcc.log(msg, "error")
-            return PipelineResult(repo_info.repo_owner, repo_info.repo_name, repo_entry=repo_entry_return)
+
+                if clone_result.error_type is CloneErrorType.Unknown:
+                    return None  # so we can try again in the future
+
+            return PipelineResult(repo_info.repo_owner, repo_info.repo_name, clone_success=clone_success)
         else:
             ghcc.log(f"{repo_full_name} successfully cloned ({clone_result.time:.2f}s)", "success")
-            repo_entry["repo_size"] = ghcc.utils.get_folder_size(repo_path)
     else:
         if not repo_entry["clone_successful"]:
             return None
 
-    if not repo_entry["compiled"] or force_recompile:
+    makefiles = None
+    if not repo_entry or not repo_entry["compiled"] or force_recompile:
         # Stage 2: Finding Makefiles.
-        makefiles = repo_entry["makefiles"]
-        repo_entry["compiled"] = True
-        if len(makefiles) == 0:
-            makefiles = [{
-                "directory": subdir,
-                "compile_success": False,
-                "binaries": [],
-                "sha256": [],
-            } for subdir in ghcc.find_makefiles(repo_path)]
-
-            if len(makefiles) == 0:
-                # Repo has no Makefiles, delete.
-                shutil.rmtree(repo_path)
-                ghcc.log(f"No Makefiles found in {repo_full_name}, repository deleted", "warning")
-                return PipelineResult(repo_info.repo_owner, repo_info.repo_name,
-                                      repo_entry=repo_entry_return, makefiles=[])
-            else:
-                # ghcc.log(f"Found {len(makefiles)} Makefiles in {repo_full_name}")
-                pass
+        makefile_dirs = ghcc.find_makefiles(repo_path)
+        if len(makefile_dirs) == 0:
+            # Repo has no Makefiles, delete.
+            shutil.rmtree(repo_path)
+            ghcc.log(f"No Makefiles found in {repo_full_name}, repository deleted", "warning")
+            return PipelineResult(repo_info.repo_owner, repo_info.repo_name, clone_success=clone_success, makefiles=[])
+        else:
+            # ghcc.log(f"Found {len(makefiles)} Makefiles in {repo_full_name}")
+            pass
 
         # Stage 3: Compile each Makefile.
         repo_binary_dir = os.path.join(binary_folder, repo_full_name)
         if not os.path.exists(repo_binary_dir):
             os.makedirs(repo_binary_dir)
-        succeeded_makefiles = []
-        failed_makefiles = []
-        for makefile in makefiles:
-            compile_result = ghcc.make(makefile["directory"], timeout=compile_timeout)
+        num_succeeded = 0
+        num_failed = 0
+        makefiles = []
+        for make_dir in makefile_dirs:
+            compile_result = ghcc.make(make_dir, timeout=compile_timeout)
             if compile_result.success:
-                makefile["compile_success"] = True
-                makefile["binaries"] = compile_result.elf_files
-                succeeded_makefiles.append(makefile["directory"])
+                num_succeeded += 1
                 # ghcc.log(f"Compiled Makefile in {makefile['directory']}, "
                 #          f"yielding {len(compile_result.elf_files)} binaries", "success")
+                sha256 = []
                 for path in compile_result.elf_files:
                     hash_obj = hashlib.sha256()
                     with open(path, "rb") as f:
                         hash_obj.update(f.read())
                     digest = hash_obj.hexdigest()
-                    makefile["sha256"].append(digest)
+                    sha256.append(digest)
                     shutil.move(path, os.path.join(repo_binary_dir, digest))
+                makefiles.append({
+                    "directory": make_dir,
+                    "binaries": compile_result.elf_files,
+                    "sha256": sha256,
+                })
             else:
-                failed_makefiles.append(makefile["directory"])
+                num_failed += 1
                 # ghcc.log(f"Failed to compile Makefile in {makefile['directory']}. "
                 #          f"Captured output: '{compile_result.captured_output}'", "error")
-        msg = f"{len(succeeded_makefiles)} out of {len(succeeded_makefiles) + len(failed_makefiles)} Makefile(s) " \
+        msg = f"{num_succeeded} out of {num_succeeded + num_failed} Makefile(s) " \
               f"in {repo_full_name} successfully compiled"
-        if len(failed_makefiles) == 0:
-            ghcc.log(msg, "success")
-        else:
-            ghcc.log(msg, "warning")
-
-        repo_entry['makefiles'] = makefiles
+        ghcc.log(msg, "success" if num_failed == 0 else "warning")
 
         # Stage 4: Clean and zip repo.
         ghcc.clean(repo_path)
@@ -183,11 +168,8 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         elif os.path.exists(archive_path):
             os.remove(archive_path)
 
-        return PipelineResult(repo_info.repo_owner, repo_info.repo_name,
-                              repo_entry=repo_entry_return, makefiles=makefiles)
-
-    else:
-        return None
+    return PipelineResult(repo_info.repo_owner, repo_info.repo_name,
+                          clone_success=clone_success, makefiles=makefiles)
 
 
 def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
@@ -222,22 +204,21 @@ def main():
         repo_count = 0
         # for result in map(pipeline_fn, iterator):
         for result in pool.imap_unordered(pipeline_fn, iterator):
+            repo_count += 1
+            if repo_count % 100 == 0:
+                ghcc.log(f"Processed {repo_count} repositories")
             if result is None:
                 continue
             result: PipelineResult
             repo_owner, repo_name = result.repo_owner, result.repo_name
-            if result.repo_entry is not None:
-                db.add_repo(repo_owner, repo_name, result.repo_entry["clone_successful"],
-                            result.repo_entry["clone_time"], result.repo_entry["repo_size"])
+            if result.clone_success is not None:
+                db.add_repo(repo_owner, repo_name, result.clone_success)
             if result.makefiles is not None:
                 try:
                     db.update_makefile(repo_owner, repo_name, result.makefiles)
                 except ValueError as e:  # mismatching number of makefiles
                     if not args.force_recompile:
                         raise e
-            repo_count += 1
-            if repo_count % 100 == 0:
-                ghcc.log(f"Processed {repo_count} repositories")
 
     except KeyboardInterrupt:
         print("Press Ctrl-C again to force terminate...")

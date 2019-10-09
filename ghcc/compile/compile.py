@@ -80,7 +80,7 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
 
         # Make while ignoring errors.
         # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
-        run_command(["make", "--keep-going"], env=env, cwd=directory, timeout=timeout)
+        run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
         result = _make_result(True)
 
     except subprocess.TimeoutExpired as e:
