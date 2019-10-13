@@ -31,7 +31,7 @@ class CloneResult(NamedTuple):
     captured_output: Optional[bytes] = None
 
 
-def clean(repo_folder: str):
+def clean(repo_folder: str) -> None:
     r"""Clean all unversioned files in a Git repository.
 
     :param repo_folder: Path to the Git repository.
@@ -45,8 +45,7 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
 
     :param repo_owner: Name of the repository owner, e.g., ``torvalds``.
     :param repo_name: Name of the repository, e.g., ``linux``.
-    :param clone_folder: Path to the folder where the repository will be stored. The actual destination folder will be
-        ``clone_folder/repo_owner/repo_name``, e.g., ``clone_folder/torvalds/linux``.
+    :param clone_folder: Path to the folder where the repository will be stored.
     :param default_branch: Name of the default branch of the repository. Cloning behavior differs slightly depending on
         whether the argument is ``None``. If ``None``, then the following happens:
 
@@ -70,11 +69,9 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
     """
     start_time = time.time()
     url = f"https://github.com/{repo_owner}/{repo_name}.git"
-    # clone_folder / repo_owner / repo_name
-    folder_path = os.path.join(clone_folder, repo_owner, repo_name)
-    if os.path.exists(folder_path):
+    if os.path.exists(clone_folder):
         if not skip_if_exists:
-            shutil.rmtree(folder_path)
+            shutil.rmtree(clone_folder)
         else:
             return CloneResult(repo_owner, repo_name, error_type=CloneErrorType.FolderExists)
 
@@ -91,7 +88,7 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
             try_branch = default_branch or "master"
             # Try cloning only 'master' branch, but it's possible there's no branch named 'master'.
             run_command(
-                ["git", "clone", "--depth=1", f"--branch={try_branch}", "--single-branch", url, folder_path],
+                ["git", "clone", "--depth=1", f"--branch={try_branch}", "--single-branch", url, clone_folder],
                 env=env, timeout=timeout)
             return
         except subprocess.CalledProcessError as err:
@@ -101,7 +98,7 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
                 raise err
         # 'master' branch doesn't exist; do a shallow clone of all branches.
         run_command(
-            ["git", "clone", "--depth=1", url, folder_path],
+            ["git", "clone", "--depth=1", url, clone_folder],
             env=env, timeout=timeout)
 
     try:

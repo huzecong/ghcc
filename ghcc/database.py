@@ -48,7 +48,7 @@ class Database:
             username=username or self.USERNAME, password=password or self.PASSWORD)
         self.collection = self.client[self.DB_NAME][self.COLLECTION_NAME]
 
-    def close(self):
+    def close(self) -> None:
         self.client.close()
         del self.collection
 

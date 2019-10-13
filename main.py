@@ -20,7 +20,7 @@ from ghcc import CloneErrorType
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--repo-list-file", type=str, default="../c-repos.csv")
-parser.add_argument("--clone-folder", type=str, default="repos/")  # where cloned repositories are stored
+parser.add_argument("--clone-folder", type=str, default="repos/")  # where cloned repositories are stored (temporarily)
 parser.add_argument("--binary-folder", type=str, default="binaries/")  # where compiled binaries are stored
 parser.add_argument("--archive-folder", type=str, default="archives/")  # where archived repositories are stored
 parser.add_argument("--n-procs", type=int, default=32)
@@ -44,6 +44,20 @@ class PipelineResult(NamedTuple):
     makefiles: Optional[List[ghcc.RepoMakefileEntry]] = None
 
 
+def contains_in_file(file_path: str, text: str) -> bool:
+    r"""Check whether the file contains a specific piece of text in its first line.
+
+    :param file_path: Path to the file.
+    :param text: The piece of text to search for.
+    :return: ``True`` only if the file exists and contains the text in its first line.
+    """
+    if not os.path.exists(file_path):
+        return False
+    with open(file_path, 'r') as f:
+        line = f.readline()
+    return text in line
+
+
 def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str, archive_folder: str,
                       clone_timeout: Optional[int] = None, compile_timeout: Optional[int] = None,
                       force_recompile: bool = False) -> Optional[PipelineResult]:
@@ -51,7 +65,9 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 
     :param repo_info: Information about the repository.
     :param clone_folder: Path to the folder where the repository will be stored. The actual destination folder will be
-        ``clone_folder/repo_owner/repo_name``, e.g., ``clone_folder/torvalds/linux``.
+        ``clone_folder/repo_owner_____repo_name``, e.g., ``clone_folder/torvalds_____linux``.
+        This strange notation is used in order to have a flat directory hierarchy, so we're not left with a bunch of
+        empty folders for repository owners.
     :param binary_folder: Path to the folder where compiled binaries will be stored. The actual destination folder will
         be ``binary_folder/repo_owner/repo_name``, e.g., ``binary_folder/torvalds/linux``.
     :param archive_folder: Path to the folder where archived repositories will be stored. The actual archive file will
@@ -62,7 +78,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     :return: An entry to insert into the DB, or `None` if no operations are required.
     """
     repo_full_name = f"{repo_info.repo_owner}/{repo_info.repo_name}"
-    repo_path = os.path.join(clone_folder, repo_full_name)
+    repo_path = os.path.join(clone_folder, f"{repo_info.repo_owner}_____{repo_info.repo_name}")
     archive_path = os.path.join(archive_folder, f"{repo_full_name}.tar.xz")
 
     repo_entry = repo_info.db_result
@@ -74,7 +90,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
              (not repo_entry["compiled"] or force_recompile) and not os.path.exists(repo_path))):
         # TODO: Try extracting archive if it exists.
         clone_result = ghcc.clone(
-            repo_info.repo_owner, repo_info.repo_name, clone_folder=clone_folder,
+            repo_info.repo_owner, repo_info.repo_name, clone_folder=repo_path,
             timeout=clone_timeout, skip_if_exists=False)
         clone_success = clone_result.success
         if not clone_result.success:
@@ -103,6 +119,19 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 
     makefiles = None
     if not repo_entry or not repo_entry["compiled"] or force_recompile:
+        # SPECIAL CHECK: Do not attempt to compile OS kernels!
+        kernel_name = None
+        if contains_in_file(os.path.join(repo_path, "README"), "Linux kernel release"):
+            kernel_name = "Linux"
+        elif contains_in_file(os.path.join(repo_path, "README"), "FreeBSD source directory"):
+            kernel_name = "FreeBSD"
+        if kernel_name is not None:
+            shutil.rmtree(repo_path)
+            ghcc.log(f"Found {kernel_name} kernel in {repo_full_name}, will not attempt to compile. "
+                     f"Repository deleted", "warning")
+            return PipelineResult(repo_info.repo_owner, repo_info.repo_name,
+                                  clone_success=clone_success, makefiles=[])
+
         # Stage 2: Finding Makefiles.
         makefile_dirs = ghcc.find_makefiles(repo_path)
         if len(makefile_dirs) == 0:
@@ -121,6 +150,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         num_succeeded = 0
         num_failed = 0
         makefiles = []
+        ghcc.log(f"Starting compilation for {repo_full_name}...")
         for make_dir in makefile_dirs:
             compile_result = ghcc.make(make_dir, timeout=compile_timeout)
             if compile_result.success:
@@ -225,12 +255,14 @@ def main():
     except BlockingIOError:
         pool.close()
         pool.terminate()
+        ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
     finally:
         pool.close()
         try:
             pool.join()
         except KeyboardInterrupt:
             pool.terminate()
+            ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
 
 
 if __name__ == '__main__':
