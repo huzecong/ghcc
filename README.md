@@ -6,7 +6,14 @@ This project serves as the data collection process for training neural decompile
 The code for compilation is adapted from
 [bvasiles/decompilationRenaming](https://github.com/bvasiles/decompilationRenaming).
 
-You will need a list of GitHub repositoriy URLs to run the code. To run, simply execute:
+## Usage
+
+First, build the Docker image used for compiling programs by:
+```bash
+docker build -t gcc-custom scripts/
+```
+
+You will need a list of GitHub repository URLs to run the code. To run, simply execute:
 ```bash
 python main.py \
     --repo-list-file path/to/your/list \

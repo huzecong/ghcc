@@ -1,7 +1,7 @@
 import subprocess
 import sys
 import tempfile
-from typing import Any, Dict, NamedTuple, Type, TypeVar, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, Type, TypeVar, Union
 
 import psutil
 import tenacity
@@ -9,6 +9,7 @@ import tenacity
 from ghcc.logging import log
 
 __all__ = [
+    "CommandResult",
     "run_command",
     "get_folder_size",
     "get_file_lines",
@@ -20,38 +21,46 @@ __all__ = [
 
 def _run_command_retry_logger(retry_state: tenacity.RetryCallState) -> None:
     args = retry_state.args[0] if len(retry_state.args) > 0 else retry_state.kwargs['args']
+    if isinstance(args, list):
+        args = ' '.join(args)
     cwd = retry_state.args[2] if len(retry_state.args) > 2 else retry_state.kwargs.get('cwd', None)
-    msg = f"{retry_state.attempt_number} failed attempt(s) for command: '{' '.join(args)}'"
+    msg = f"{retry_state.attempt_number} failed attempt(s) for command: '{args}'"
     if cwd is not None:
         msg += f" in working directory '{cwd}'"
     log(msg, "warning")
 
 
+class CommandResult(NamedTuple):
+    command: List[str]
+    return_code: int
+    captured_output: Optional[bytes]
+
 @tenacity.retry(retry=tenacity.retry_if_exception_type(OSError), reraise=True,
                 stop=tenacity.stop_after_attempt(6),  # retry 5 times
                 wait=tenacity.wait_random_exponential(multiplier=2, max=60),
                 before_sleep=_run_command_retry_logger)
-def run_command(args: List[str], env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
-                timeout: Optional[int] = None, return_output: bool = False, **kwargs) -> Optional[str]:
+def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
+                timeout: Optional[int] = None, return_output: bool = False, **kwargs) -> CommandResult:
     r"""A wrapper over ``subprocess.check_output`` that prevents deadlock caused by the combination of pipes and
     timeout. Output is redirected into a temporary file and returned only on exceptions.
 
     In case an OSError occurs, the function will retry for a maximum for 5 times with exponential backoff. If error
     still occurs, we just throw it up.
 
-    :param return_output: If ``True``, the captured output is returned.
+    :param return_output: If ``True``, the captured output is returned. Otherwise, the return code is returned.
     """
     with tempfile.TemporaryFile() as f:
         try:
-            subprocess.run(args, check=True, stdout=f, stderr=subprocess.STDOUT,
-                           timeout=timeout, env=env, cwd=cwd, **kwargs)
+            ret = subprocess.run(args, check=True, stdout=f, stderr=subprocess.STDOUT,
+                                 timeout=timeout, env=env, cwd=cwd, **kwargs)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             f.seek(0)
             e.output = f.read()
             raise e from None
-        if return_output:
+        if return_output or ret.returncode != 0:
             f.seek(0)
-            return f.read()
+            return CommandResult(args, ret.returncode, f.read())
+    return CommandResult(args, ret.returncode, None)
 
 
 def get_folder_size(path: str) -> int:

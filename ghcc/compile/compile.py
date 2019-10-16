@@ -6,13 +6,14 @@ from typing import List, NamedTuple, Optional
 
 from ghcc.repo import clean
 from ghcc.utils import run_command
-from . import mock_path
 
-MOCK_PATH = os.path.split(mock_path.__file__)[0]
+MOCK_PATH = os.path.abspath(os.path.join(os.path.split(__file__)[0], "..", "..", "scripts", "mock_path"))
 
 __all__ = [
     "find_makefiles",
-    "make",
+    "CompileErrorType",
+    "CompileResult",
+    "unsafe_make",
 ]
 
 
@@ -42,16 +43,20 @@ class CompileResult(NamedTuple):
     captured_output: Optional[str] = None
 
 
-def _make_result(success: bool = False, elf_files: Optional[List[str]] = None,
-                 error_type: Optional[CompileErrorType] = None,
-                 captured_output: Optional[str] = None) -> CompileResult:
+def _create_result(success: bool = False, elf_files: Optional[List[str]] = None,
+                   error_type: Optional[CompileErrorType] = None,
+                   captured_output: Optional[str] = None) -> CompileResult:
     if elf_files is None:
         elf_files = []
     return CompileResult(success, elf_files=elf_files, error_type=error_type, captured_output=captured_output)
 
 
-def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
+def unsafe_make(directory: str, timeout: Optional[int] = None) -> CompileResult:
     r"""Run ``make`` in the given directory and collect compilation outputs.
+
+    .. warning::
+        This will run ``make`` on your physical machine under the same privilege granted to the Python program.
+        Never run programs from unvalidated sources as malicious programs could break your system.
 
     :param directory: Path to the directory containing the Makefile.
     :param timeout: Maximum time allowed for compilation, in seconds. Defaults to ``None`` (unlimited time).
@@ -80,20 +85,22 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
 
         # Make while ignoring errors.
         # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
-        run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
-        result = _make_result(True)
+        # run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
+        print(run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout, return_output=True).captured_output.decode('utf-8'))
+        result = _create_result(True)
 
     except subprocess.TimeoutExpired as e:
         # Even if exceptions occur, we still check for ELF files, just in case.
-        result = _make_result(error_type=CompileErrorType.Timeout, captured_output=e.output)
+        result = _create_result(error_type=CompileErrorType.Timeout, captured_output=e.output)
     except subprocess.CalledProcessError as e:
-        result = _make_result(error_type=CompileErrorType.CompileFailed, captured_output=e.output)
+        result = _create_result(error_type=CompileErrorType.CompileFailed, captured_output=e.output)
     except OSError as e:
-        result = _make_result(error_type=CompileErrorType.Unknown, captured_output=str(e))
+        result = _create_result(error_type=CompileErrorType.Unknown, captured_output=str(e))
 
     try:
         # Use Git to find all unversioned files -- these would be the products of compilation.
-        output = run_command(["git", "ls-files", "--others"], cwd=directory, timeout=timeout, return_output=True)
+        output = run_command(["git", "ls-files", "--others"], cwd=directory,
+                             timeout=timeout, return_output=True).captured_output
         diff_files = [
             # files containing escape characters are in quotes
             os.path.join(directory, file if file[0] != '"' else file[1:-1])
@@ -106,10 +113,10 @@ def make(directory: str, timeout: Optional[int] = None) -> CompileResult:
             if "ELF" in output:
                 result.elf_files.append(file)
     except subprocess.TimeoutExpired as e:
-        return _make_result(elf_files=result.elf_files, error_type=CompileErrorType.Timeout, captured_output=e.output)
+        return _create_result(elf_files=result.elf_files, error_type=CompileErrorType.Timeout, captured_output=e.output)
     except subprocess.CalledProcessError as e:
-        return _make_result(elf_files=result.elf_files, error_type=CompileErrorType.Unknown, captured_output=e.output)
+        return _create_result(elf_files=result.elf_files, error_type=CompileErrorType.Unknown, captured_output=e.output)
     except OSError as e:
-        return _make_result(elf_files=result.elf_files, error_type=CompileErrorType.Unknown, captured_output=str(e))
+        return _create_result(elf_files=result.elf_files, error_type=CompileErrorType.Unknown, captured_output=str(e))
 
     return result

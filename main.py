@@ -13,6 +13,7 @@ import multiprocessing
 import os
 import shutil
 import subprocess
+import time
 from typing import Iterator, List, NamedTuple, Optional
 
 import ghcc
@@ -78,7 +79,8 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     :return: An entry to insert into the DB, or `None` if no operations are required.
     """
     repo_full_name = f"{repo_info.repo_owner}/{repo_info.repo_name}"
-    repo_path = os.path.join(clone_folder, f"{repo_info.repo_owner}_____{repo_info.repo_name}")
+    repo_folder_name = f"{repo_info.repo_owner}_____{repo_info.repo_name}"
+    repo_path = os.path.join(clone_folder, repo_folder_name)
     archive_path = os.path.join(archive_folder, f"{repo_full_name}.tar.xz")
 
     repo_entry = repo_info.db_result
@@ -90,7 +92,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
              (not repo_entry["compiled"] or force_recompile) and not os.path.exists(repo_path))):
         # TODO: Try extracting archive if it exists.
         clone_result = ghcc.clone(
-            repo_info.repo_owner, repo_info.repo_name, clone_folder=repo_path,
+            repo_info.repo_owner, repo_info.repo_name, clone_folder=clone_folder, folder_name=repo_folder_name,
             timeout=clone_timeout, skip_if_exists=False)
         clone_success = clone_result.success
         if not clone_result.success:
@@ -119,18 +121,18 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 
     makefiles = None
     if not repo_entry or not repo_entry["compiled"] or force_recompile:
-        # SPECIAL CHECK: Do not attempt to compile OS kernels!
-        kernel_name = None
-        if contains_in_file(os.path.join(repo_path, "README"), "Linux kernel release"):
-            kernel_name = "Linux"
-        elif contains_in_file(os.path.join(repo_path, "README"), "FreeBSD source directory"):
-            kernel_name = "FreeBSD"
-        if kernel_name is not None:
-            shutil.rmtree(repo_path)
-            ghcc.log(f"Found {kernel_name} kernel in {repo_full_name}, will not attempt to compile. "
-                     f"Repository deleted", "warning")
-            return PipelineResult(repo_info.repo_owner, repo_info.repo_name,
-                                  clone_success=clone_success, makefiles=[])
+        # # SPECIAL CHECK: Do not attempt to compile OS kernels!
+        # kernel_name = None
+        # if contains_in_file(os.path.join(repo_path, "README"), "Linux kernel release"):
+        #     kernel_name = "Linux"
+        # elif contains_in_file(os.path.join(repo_path, "README"), "FreeBSD source directory"):
+        #     kernel_name = "FreeBSD"
+        # if kernel_name is not None:
+        #     shutil.rmtree(repo_path)
+        #     ghcc.log(f"Found {kernel_name} kernel in {repo_full_name}, will not attempt to compile. "
+        #              f"Repository deleted", "warning")
+        #     return PipelineResult(repo_info.repo_owner, repo_info.repo_name,
+        #                           clone_success=clone_success, makefiles=[])
 
         # Stage 2: Finding Makefiles.
         makefile_dirs = ghcc.find_makefiles(repo_path)
@@ -151,8 +153,15 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         num_failed = 0
         makefiles = []
         ghcc.log(f"Starting compilation for {repo_full_name}...")
+        remaining_time = compile_timeout
         for make_dir in makefile_dirs:
-            compile_result = ghcc.make(make_dir, timeout=compile_timeout)
+            if remaining_time <= 0.0:
+                num_failed += 1
+                continue
+            start_time = time.time()
+            compile_result = ghcc.docker_make(make_dir, timeout=remaining_time)
+            elapsed_time = time.time() - start_time
+            remaining_time -= elapsed_time
             if compile_result.success:
                 num_succeeded += 1
                 # ghcc.log(f"Compiled Makefile in {makefile['directory']}, "

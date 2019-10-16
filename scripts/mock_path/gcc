@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 r"""A fake gcc implementation which records input/output files, adds -O0 flag, and then calls real gcc.
 """
 import argparse
@@ -20,10 +20,17 @@ def main():
     parser.add_argument('-mabi')  # ignored
     parser.add_argument('-march')  # ignored
     parser.add_argument('-mtune')  # ignored
+    # Link time optimization would cause `-g` to be ignored on older versions of GCC
+    parser.add_argument('-flto', action='store_true')  # ignored
     parser.add_argument('-mlittle-endian', action='store_true')  # ignored
     parser.add_argument('-mapcs', action='store_true')  # ignored
     parser.add_argument('-mno-sched-prolog', action='store_true')  # ignored
     args, unknown_args = parser.parse_known_args(sys.argv[1:])
+
+    # Remove the mock path from PATH to find the actual GCC
+    cur_path = os.path.split(__file__)[0]
+    all_paths = [os.path.abspath(path) for path in os.environ["PATH"].split(":")]
+    env = {b"PATH": ':'.join(path for path in all_paths if path != cur_path).encode('utf-8')}
 
     filenames = filter_filenames(unknown_args)
     out_file = None
@@ -43,13 +50,11 @@ def main():
     try:
         gcc = "gcc"  # "gcc-4.7"
         # When multiple -O options are specified, the last one takes precedence.
-        gcc_args = ["/usr/bin/" + gcc] + known_args + unknown_args + ["-o", out_file, "-O0", "-g"]
+        gcc_args = [gcc] + known_args + unknown_args + ["-o", out_file, "-O0", "-g"]
         sys.stderr.write("Mock GCC: " + ' '.join(gcc_args) + "\n")
         # Redirecting to a pipe could prevent GCC producing colored output.
-        process = subprocess.Popen(gcc_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        process = subprocess.Popen(gcc_args, stdout=sys.stdout, stderr=sys.stderr, env=env)
         process.wait()
-        output = process.stdout.read().decode('utf-8')
-        sys.stderr.write(output)
         if process.returncode != 0:
             sys.stderr.write(f"Return code: {process.returncode}\n")
             exit(process.returncode)

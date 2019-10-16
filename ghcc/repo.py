@@ -39,13 +39,15 @@ def clean(repo_folder: str) -> None:
     run_command(["git", "clean", "-f", "-x", "-d"], cwd=repo_folder)
 
 
-def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Optional[str] = None,
+def clone(repo_owner: str, repo_name: str, clone_folder: str,
+          folder_name: Optional[str] = None, default_branch: Optional[str] = None,
           timeout: Optional[int] = None, skip_if_exists: bool = True) -> CloneResult:
     r"""Clone a repository on GitHub, for instance, ``torvalds/linux``.
 
     :param repo_owner: Name of the repository owner, e.g., ``torvalds``.
     :param repo_name: Name of the repository, e.g., ``linux``.
     :param clone_folder: Path to the folder where the repository will be stored.
+    :param folder_name: Name of the folder of the cloned repository. If ``None``, ``repo_owner/repo_name`` is used.
     :param default_branch: Name of the default branch of the repository. Cloning behavior differs slightly depending on
         whether the argument is ``None``. If ``None``, then the following happens:
 
@@ -69,6 +71,9 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, default_branch: Op
     """
     start_time = time.time()
     url = f"https://github.com/{repo_owner}/{repo_name}.git"
+    if folder_name is None:
+        folder_name = f"{repo_owner}/{repo_name}"
+    clone_folder = os.path.join(clone_folder, folder_name)
     if os.path.exists(clone_folder):
         if not skip_if_exists:
             shutil.rmtree(clone_folder)
