@@ -1,3 +1,4 @@
+psutil
 mypy_extensions
 pymongo
 tenacity

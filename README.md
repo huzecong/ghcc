@@ -10,7 +10,7 @@ The code for compilation is adapted from
 
 First, build the Docker image used for compiling programs by:
 ```bash
-docker build -t gcc-custom scripts/
+docker build -t gcc-custom .
 ```
 
 You will need a list of GitHub repository URLs to run the code. To run, simply execute:

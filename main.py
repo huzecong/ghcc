@@ -14,22 +14,29 @@ import os
 import shutil
 import subprocess
 import time
-from typing import Iterator, List, NamedTuple, Optional
+from typing import Iterator, List, NamedTuple, Optional, Tuple
+
+from mypy_extensions import TypedDict
 
 import ghcc
 from ghcc import CloneErrorType
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--repo-list-file", type=str, default="../c-repos.csv")
-parser.add_argument("--clone-folder", type=str, default="repos/")  # where cloned repositories are stored (temporarily)
-parser.add_argument("--binary-folder", type=str, default="binaries/")  # where compiled binaries are stored
-parser.add_argument("--archive-folder", type=str, default="archives/")  # where archived repositories are stored
-parser.add_argument("--n-procs", type=int, default=32)
-parser.add_argument("--log-file", type=str, default="log.txt")
-parser.add_argument("--clone-timeout", type=int, default=600)  # wait up to 10 minutes
-parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
-parser.add_argument("--force-recompile", action="store_true", default=False)
-args = parser.parse_args()
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-list-file", type=str, default="../c-repos.csv")
+    parser.add_argument("--clone-folder", type=str,
+                        default="repos/")  # where cloned repositories are stored (temporarily)
+    parser.add_argument("--binary-folder", type=str, default="binaries/")  # where compiled binaries are stored
+    parser.add_argument("--archive-folder", type=str, default="archives/")  # where archived repositories are stored
+    parser.add_argument("--n-procs", type=int, default=32)
+    parser.add_argument("--log-file", type=str, default="log.txt")
+    parser.add_argument("--clone-timeout", type=int, default=600)  # wait up to 10 minutes
+    parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
+    parser.add_argument("--force-recompile", action="store_true", default=False)
+    parser.add_argument("--docker-batch-compile", action="store_true", default=False)
+    args = parser.parse_args()
+    return args
 
 
 class RepoInfo(NamedTuple):
@@ -57,6 +64,82 @@ def contains_in_file(file_path: str, text: str) -> bool:
     with open(file_path, 'r') as f:
         line = f.readline()
     return text in line
+
+
+class MakefileInfo(TypedDict):
+    directory: str
+    binaries: List[str]
+    sha256: List[str]
+
+
+RepoCompileResult = Tuple[int, List[MakefileInfo]]
+
+
+def _compile_one_by_one(repo_binary_dir: str, makefile_dirs: List[str],
+                        compile_timeout: Optional[int]) -> RepoCompileResult:
+    num_succeeded = 0
+    makefiles: List[MakefileInfo] = []
+    remaining_time = compile_timeout
+    for make_dir in makefile_dirs:
+        if remaining_time <= 0.0:
+            break
+        start_time = time.time()
+        compile_result = ghcc.docker_make(make_dir, timeout=remaining_time)
+        elapsed_time = time.time() - start_time
+        remaining_time -= elapsed_time
+        if compile_result.success:
+            num_succeeded += 1
+            # ghcc.log(f"Compiled Makefile in {makefile['directory']}, "
+            #          f"yielding {len(compile_result.elf_files)} binaries", "success")
+            sha256: List[str] = []
+            for path in compile_result.elf_files:
+                hash_obj = hashlib.sha256()
+                with open(path, "rb") as f:
+                    hash_obj.update(f.read())
+                digest = hash_obj.hexdigest()
+                sha256.append(digest)
+                shutil.move(path, os.path.join(repo_binary_dir, digest))
+            makefiles.append({
+                "directory": make_dir,
+                "binaries": compile_result.elf_files,
+                "sha256": sha256,
+            })
+        else:
+            # ghcc.log(f"Failed to compile Makefile in {makefile['directory']}. "
+            #          f"Captured output: '{compile_result.captured_output}'", "error")
+            pass
+    return num_succeeded, makefiles
+
+
+def _docker_batch_compile(repo_binary_dir: str, repo_path: str, compile_timeout: Optional[int]) -> RepoCompileResult:
+    try:
+        ret = ghcc.run_docker_command([
+            "batch_make.py",
+            *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else [])],
+            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"}, return_output=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        pass
+    with open(os.path.join(repo_binary_dir, "log.txt")) as f:
+        lines = [line.strip() for line in f if line]
+    os.remove(os.path.join(repo_binary_dir, "log.txt"))
+    num_succeeded = int(lines[0])
+    makefiles: List[MakefileInfo] = []
+    p = 1
+    for _ in range(num_succeeded):
+        pos = lines[p].find(' ')
+        n_binaries, directory = int(lines[p][:pos]), lines[p][(pos + 1):]
+        sha256, binaries = [], []
+        for line in lines[(p + 1):(p + n_binaries + 1)]:
+            pos = line.find(' ')
+            sha, path = line[:pos], line[(pos + 1):]
+            sha256.append(sha)
+            binaries.append(path)
+        makefiles.append({
+            "directory": directory,
+            "binaries": binaries,
+            "sha256": sha256,
+        })
+    return num_succeeded, makefiles
 
 
 def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str, archive_folder: str,
@@ -149,40 +232,11 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         repo_binary_dir = os.path.join(binary_folder, repo_full_name)
         if not os.path.exists(repo_binary_dir):
             os.makedirs(repo_binary_dir)
-        num_succeeded = 0
-        num_failed = 0
-        makefiles = []
         ghcc.log(f"Starting compilation for {repo_full_name}...")
-        remaining_time = compile_timeout
-        for make_dir in makefile_dirs:
-            if remaining_time <= 0.0:
-                num_failed += 1
-                continue
-            start_time = time.time()
-            compile_result = ghcc.docker_make(make_dir, timeout=remaining_time)
-            elapsed_time = time.time() - start_time
-            remaining_time -= elapsed_time
-            if compile_result.success:
-                num_succeeded += 1
-                # ghcc.log(f"Compiled Makefile in {makefile['directory']}, "
-                #          f"yielding {len(compile_result.elf_files)} binaries", "success")
-                sha256 = []
-                for path in compile_result.elf_files:
-                    hash_obj = hashlib.sha256()
-                    with open(path, "rb") as f:
-                        hash_obj.update(f.read())
-                    digest = hash_obj.hexdigest()
-                    sha256.append(digest)
-                    shutil.move(path, os.path.join(repo_binary_dir, digest))
-                makefiles.append({
-                    "directory": make_dir,
-                    "binaries": compile_result.elf_files,
-                    "sha256": sha256,
-                })
-            else:
-                num_failed += 1
-                # ghcc.log(f"Failed to compile Makefile in {makefile['directory']}. "
-                #          f"Captured output: '{compile_result.captured_output}'", "error")
+
+        num_succeeded, makefiles = _compile_one_by_one(repo_binary_dir, makefile_dirs, compile_timeout)
+        num_failed = len(makefile_dirs) - num_succeeded
+
         msg = f"{num_succeeded} out of {num_succeeded + num_failed} Makefile(s) " \
               f"in {repo_full_name} successfully compiled"
         ghcc.log(msg, "success" if num_failed == 0 else "warning")
@@ -229,6 +283,9 @@ def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
 
 
 def main():
+    args = parse_args()
+    ghcc.set_log_file(args.log_file)
+
     ghcc.log("Crawling starts...", "warning")
     pool = multiprocessing.Pool(processes=args.n_procs)
     db = ghcc.Database()
@@ -276,5 +333,4 @@ def main():
 
 if __name__ == '__main__':
     # ghcc.utils.register_ipython_excepthook()
-    ghcc.set_log_file(args.log_file)
     main()
