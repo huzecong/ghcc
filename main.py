@@ -89,8 +89,8 @@ def _compile_one_by_one(repo_binary_dir: str, makefile_dirs: List[str],
         remaining_time -= elapsed_time
         if compile_result.success:
             num_succeeded += 1
-            # ghcc.log(f"Compiled Makefile in {makefile['directory']}, "
-            #          f"yielding {len(compile_result.elf_files)} binaries", "success")
+        if len(compile_result.elf_files) > 0:
+            # Failed compilations may also yield binaries.
             sha256: List[str] = []
             for path in compile_result.elf_files:
                 hash_obj = hashlib.sha256()
@@ -104,10 +104,6 @@ def _compile_one_by_one(repo_binary_dir: str, makefile_dirs: List[str],
                 "binaries": compile_result.elf_files,
                 "sha256": sha256,
             })
-        else:
-            # ghcc.log(f"Failed to compile Makefile in {makefile['directory']}. "
-            #          f"Captured output: '{compile_result.captured_output}'", "error")
-            pass
     return num_succeeded, makefiles
 
 
@@ -123,9 +119,10 @@ def _docker_batch_compile(repo_binary_dir: str, repo_path: str, compile_timeout:
         lines = [line.strip() for line in f if line]
     os.remove(os.path.join(repo_binary_dir, "log.txt"))
     num_succeeded = int(lines[0])
+    num_makefiles = int(lines[1])
     makefiles: List[MakefileInfo] = []
-    p = 1
-    for _ in range(num_succeeded):
+    p = 2
+    for _ in range(num_makefiles):
         pos = lines[p].find(' ')
         n_binaries, directory = int(lines[p][:pos]), lines[p][(pos + 1):]
         sha256, binaries = [], []
@@ -144,7 +141,7 @@ def _docker_batch_compile(repo_binary_dir: str, repo_path: str, compile_timeout:
 
 def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str, archive_folder: str,
                       clone_timeout: Optional[int] = None, compile_timeout: Optional[int] = None,
-                      force_recompile: bool = False) -> Optional[PipelineResult]:
+                      force_recompile: bool = False, docker_batch_compile: bool = True) -> Optional[PipelineResult]:
     r"""Perform the entire pipeline.
 
     :param repo_info: Information about the repository.
@@ -159,6 +156,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     :param clone_timeout: Timeout for cloning, or `None` (default) for unlimited time.
     :param compile_timeout: Timeout for compilation, or `None` (default) for unlimited time.
     :param force_recompile: If ``True``, the repository is compiled regardless of the value in DB.
+    :param docker_batch_compile: If ``True``, compile all Makefiles within a repository in a single Docker container.
     :return: An entry to insert into the DB, or `None` if no operations are required.
     """
     repo_full_name = f"{repo_info.repo_owner}/{repo_info.repo_name}"
@@ -234,12 +232,15 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
             os.makedirs(repo_binary_dir)
         ghcc.log(f"Starting compilation for {repo_full_name}...")
 
-        num_succeeded, makefiles = _compile_one_by_one(repo_binary_dir, makefile_dirs, compile_timeout)
-        num_failed = len(makefile_dirs) - num_succeeded
+        if docker_batch_compile:
+            num_succeeded, makefiles = _docker_batch_compile(repo_binary_dir, repo_path, compile_timeout)
+        else:
+            num_succeeded, makefiles = _compile_one_by_one(repo_binary_dir, makefile_dirs, compile_timeout)
+        num_binaries = sum(len(makefile["binaries"]) for makefile in makefiles)
 
-        msg = f"{num_succeeded} out of {num_succeeded + num_failed} Makefile(s) " \
-              f"in {repo_full_name} successfully compiled"
-        ghcc.log(msg, "success" if num_failed == 0 else "warning")
+        msg = f"{num_succeeded} ({len(makefiles)}) out of {len(makefile_dirs)} Makefile(s) in {repo_full_name} " \
+              f"compiled (partially), yielding {num_binaries} binaries"
+        ghcc.log(msg, "success" if num_succeeded == len(makefile_dirs) else "warning")
 
         # Stage 4: Clean and zip repo.
         ghcc.clean(repo_path)
@@ -284,6 +285,7 @@ def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
 
 def main():
     args = parse_args()
+    print(args)
     ghcc.set_log_file(args.log_file)
 
     ghcc.log("Crawling starts...", "warning")
@@ -296,7 +298,7 @@ def main():
             clone_and_compile,
             clone_folder=args.clone_folder, binary_folder=args.binary_folder, archive_folder=args.archive_folder,
             clone_timeout=args.clone_timeout, compile_timeout=args.compile_timeout,
-            force_recompile=args.force_recompile)
+            force_recompile=args.force_recompile, docker_batch_compile=args.docker_batch_compile)
         repo_count = 0
         # for result in map(pipeline_fn, iterator):
         for result in pool.imap_unordered(pipeline_fn, iterator):

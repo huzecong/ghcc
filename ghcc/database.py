@@ -77,6 +77,7 @@ class Database:
             "clone_successful": clone_successful,
             "compiled": False,
             "num_makefiles": 0,
+            "num_binaries": 0,
             "makefiles": [],
         }
         result = self.collection.insert_one(record)
@@ -92,6 +93,7 @@ class Database:
         result = self.collection.update_one({"_id": entry["_id"]}, {"$set": {
             "compiled": True,
             "num_makefiles": len(makefiles),
+            "num_binaries": sum(len(makefile["binaries"]) for makefile in makefiles),
             "makefiles": makefiles,
         }})
         assert result.matched_count == 1

@@ -28,6 +28,7 @@ def main():
         remaining_time -= elapsed_time
         if compile_result.success:
             num_succeeded += 1
+        if len(compile_result.elf_files) > 0:
             sha256 = []
             for path in compile_result.elf_files:
                 path = os.path.join(make_dir, path)
@@ -45,6 +46,7 @@ def main():
 
     with open("/usr/src/bin/log.txt", "w") as f:
         f.write(f"{num_succeeded}\n")
+        f.write(f"{len(makefiles)}\n")
         for makefile in makefiles:
             directory = makefile["directory"]
             binaries = makefile["binaries"]
