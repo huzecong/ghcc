@@ -116,7 +116,7 @@ def _docker_batch_compile(repo_binary_dir: str, repo_path: str, compile_timeout:
         ret = ghcc.run_docker_command([
             "batch_make.py",
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else [])],
-            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"}, return_output=True)
+            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"})
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         pass
     with open(os.path.join(repo_binary_dir, "log.txt")) as f:

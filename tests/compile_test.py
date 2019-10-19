@@ -2,6 +2,8 @@ import os
 import tempfile
 import unittest
 
+from typing import List
+
 import ghcc
 from main import _docker_batch_compile
 
@@ -12,7 +14,7 @@ class CompileTest(unittest.TestCase):
 
         # Clone an existing repo.
         result = ghcc.clone("pjreddie", "uwimg", clone_folder=self.tempdir.name, skip_if_exists=False)
-        self.assertTrue(result.success, msg=result.captured_output)
+        assert result.success is True, result.captured_output
 
         self.directory = os.path.join(self.tempdir.name, result.repo_owner, result.repo_name)
         self.target_elfs = [
@@ -37,6 +39,13 @@ class CompileTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
+    def _test_debug_info(self, elf_paths: List[str]):
+        # Check if binaries contain debugging information (whether mock GCC works).
+        for elf in elf_paths:
+            # NOTE: This doesn't work under macOS.
+            ret = ghcc.utils.run_command(f"objdump --syms {elf} | grep debug | wc -l", return_output=True, shell=True)
+            assert int(ret.captured_output.decode('utf-8')) > 0
+
     def _test_compile(self, compile_func):
         # Find Makefiles.
         makefiles = ghcc.find_makefiles(self.directory)
@@ -44,14 +53,11 @@ class CompileTest(unittest.TestCase):
 
         # Try compile.
         result = compile_func(makefiles[0], timeout=15)
-        self.assertTrue(result.success, msg=result.captured_output)
-        self.assertEqual(set(self.target_elfs), set(result.elf_files), msg=result.captured_output)
+        assert result.success is True, result.captured_output
+        assert set(self.target_elfs) == set(result.elf_files), result.captured_output
 
-        # Check if binaries contain debugging information (whether mock GCC works).
-        for elf in self.target_elfs:
-            # NOTE: This doesn't work under macOS.
-            ret = ghcc.utils.run_command(f"objdump --syms {elf} | grep debug | wc -l", return_output=True, shell=True)
-            self.assertGreater(int(ret.captured_output.decode('utf-8')), 0)
+        elf_paths = [os.path.join(self.directory, elf) for elf in self.target_elfs]
+        self._test_debug_info(elf_paths)
 
     def test_compile(self):
         self._test_compile(ghcc.unsafe_make)
@@ -63,6 +69,9 @@ class CompileTest(unittest.TestCase):
         binary_dir = os.path.join(self.tempdir.name, "_bin")
         os.makedirs(binary_dir)
         num_succeeded, makefiles = _docker_batch_compile(binary_dir, self.directory, 20)
-        self.assertEqual(1, num_succeeded)
-        self.assertEqual(1, len(makefiles))
-        self.assertEqual(set(self.target_elfs), set(makefiles[0]["binaries"]))
+        assert num_succeeded == 1
+        assert len(makefiles) == 1
+        assert set(self.target_elfs) == set(makefiles[0]["binaries"])
+
+        elf_paths = [os.path.join(binary_dir, file) for file in makefiles[0]["sha256"]]
+        self._test_debug_info(elf_paths)

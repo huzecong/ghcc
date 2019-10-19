@@ -115,8 +115,7 @@ def _unsafe_make(directory: str, timeout: Optional[int] = None) -> None:
     # Make while ignoring errors.
     # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
     # run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
-    run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout,
-                return_output=True).captured_output.decode('utf-8')
+    run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
 
 
 def unsafe_make(directory: str, timeout: Optional[int] = None) -> CompileResult:

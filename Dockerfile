@@ -1,8 +1,7 @@
 FROM gcc:latest
 
-# Install packages for compilation.
+# Install necessary packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    nasm \
     ca-certificates \
     curl \
     python3-dev
@@ -23,6 +22,12 @@ COPY requirements.txt /usr/src/
 RUN pip install -r /usr/src/requirements.txt && \
     rm /usr/src/requirements.txt
 
+# Install packages for compilation & ease-of-use.
+RUN apt-get install -y --no-install-recommends \
+    nasm \
+    less \
+    vim
+
 # Create entrypoint that sets appropriate group and user IDs.
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
@@ -32,5 +37,5 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 ENV CUSTOM_PATH="/usr/custom"
 COPY ghcc/ $CUSTOM_PATH/ghcc/
 COPY scripts/ $CUSTOM_PATH/scripts/
-ENV PATH="$CUSTOM_PATH/scripts/:$PATH"
+ENV PATH="$CUSTOM_PATH/scripts/mock_path:$PATH"
 ENV PYTHONPATH="$CUSTOM_PATH/:$PYTHONPATH"
