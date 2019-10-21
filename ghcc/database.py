@@ -1,3 +1,5 @@
+import argparse
+import sys
 from datetime import datetime
 from typing import List, Optional
 
@@ -60,7 +62,7 @@ class Database:
         return self.collection.find_one({"repo_owner": repo_owner, "repo_name": repo_name})
 
     def add_repo(self, repo_owner: str, repo_name: str, clone_successful: bool,
-                 clone_time: Optional[datetime] = None, repo_size: int = -1) -> ObjectId:
+                 clone_time: Optional[datetime] = None, repo_size: int = -1) -> None:
         r"""Add a new DB entry for the specified repository. Arguments correspond to the first three fields in
         :class:`RepoEntry`. Other fields are set to sensible default values (``False`` and ``[]``).
 
@@ -71,17 +73,18 @@ class Database:
         :param repo_size: Size (in bytes) of the cloned repository, or ``-1`` (default) if cloning failed.
         :return: The internal ID of the inserted entry.
         """
-        record = {
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "clone_successful": clone_successful,
-            "compiled": False,
-            "num_makefiles": 0,
-            "num_binaries": 0,
-            "makefiles": [],
-        }
-        result = self.collection.insert_one(record)
-        return result.inserted_id
+        if self.get(repo_owner, repo_name) is None:
+            record = {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "clone_successful": clone_successful,
+                "repo_size": repo_size,
+                "compiled": False,
+                "num_makefiles": 0,
+                "num_binaries": 0,
+                "makefiles": [],
+            }
+            self.collection.insert_one(record)
 
     def update_makefile(self, repo_owner: str, repo_name: str, makefiles: List[RepoMakefileEntry]) -> None:
         entry = self.get(repo_owner, repo_name)
@@ -97,3 +100,15 @@ class Database:
             "makefiles": makefiles,
         }})
         assert result.matched_count == 1
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == "clear":
+        confirm = input("This will drop the entire database. Confirm? [y/N]")
+        if confirm.lower() in ["y", "yes"]:
+            db = Database()
+            db.collection.delete_many()
+            db.close()
+            print("Database dropped.")
+        else:
+            print("Operation cancelled.")

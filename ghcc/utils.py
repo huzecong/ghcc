@@ -47,6 +47,11 @@ def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] =
     In case an OSError occurs, the function will retry for a maximum for 5 times with exponential backoff. If error
     still occurs, we just throw it up.
 
+    :param args: The command to run. Should be either a `str` or a list of `str` depending on whether ``shell`` is True.
+    :param env: Environment variables to set before running the command. Defaults to None.
+    :param cwd: The working directory of the command to run. If None, uses the default (probably user home).
+    :param timeout: Maximum running time for the command. If running time exceeds the specified limit,
+        ``subprocess.TimeoutExpired`` is thrown.
     :param return_output: If ``True``, the captured output is returned. Otherwise, the return code is returned.
     """
     with tempfile.TemporaryFile() as f:
@@ -69,6 +74,19 @@ def get_folder_size(path: str) -> int:
     Credit: https://stackoverflow.com/a/25574638/4909228
     """
     return int(subprocess.check_output(['du', '-bs', path]).split()[0].decode('utf-8'))
+
+
+def readable_size(size: int) -> str:
+    r"""Represent file size in human-readable format.
+
+    :param size: File size in bytes.
+    """
+    units = ["", "K", "M", "G", "T"]
+    for unit in units:
+        if size < 1024:
+            return f"{size:.2f}{unit}"
+        size /= 1024
+    return f"{size:.2f}P"  # this won't happen
 
 
 def get_file_lines(path: str) -> int:

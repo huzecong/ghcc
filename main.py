@@ -35,11 +35,14 @@ def parse_args():
     parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
     parser.add_argument("--force-recompile", action="store_true", default=False)
     parser.add_argument("--docker-batch-compile", action="store_true", default=False)
+    parser.add_argument("--max-archive-size", type=int,
+                        default=100 * 1024 * 1024)  # only archive repos no larger than 100MB.
     args = parser.parse_args()
     return args
 
 
 class RepoInfo(NamedTuple):
+    index: int
     repo_owner: str
     repo_name: str
     db_result: Optional[ghcc.RepoEntry]
@@ -49,6 +52,7 @@ class PipelineResult(NamedTuple):
     repo_owner: str
     repo_name: str
     clone_success: Optional[bool] = None
+    repo_size: Optional[int] = None
     makefiles: Optional[List[ghcc.RepoMakefileEntry]] = None
 
 
@@ -107,11 +111,15 @@ def _compile_one_by_one(repo_binary_dir: str, makefile_dirs: List[str],
     return num_succeeded, makefiles
 
 
-def _docker_batch_compile(repo_binary_dir: str, repo_path: str, compile_timeout: Optional[int]) -> RepoCompileResult:
+def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
+                          compile_timeout: Optional[int]) -> RepoCompileResult:
     try:
+        # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
+        # get the results file if any compilation task timeouts.
         ret = ghcc.run_docker_command([
             "batch_make.py",
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else [])],
+            user=(index % 10000) + 30000,  # user IDs 30000 ~ 39999
             directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"})
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         pass
@@ -141,7 +149,8 @@ def _docker_batch_compile(repo_binary_dir: str, repo_path: str, compile_timeout:
 
 def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str, archive_folder: str,
                       clone_timeout: Optional[int] = None, compile_timeout: Optional[int] = None,
-                      force_recompile: bool = False, docker_batch_compile: bool = True) -> Optional[PipelineResult]:
+                      force_recompile: bool = False, docker_batch_compile: bool = True,
+                      max_archive_size: Optional[int] = None) -> Optional[PipelineResult]:
     r"""Perform the entire pipeline.
 
     :param repo_info: Information about the repository.
@@ -157,6 +166,8 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     :param compile_timeout: Timeout for compilation, or `None` (default) for unlimited time.
     :param force_recompile: If ``True``, the repository is compiled regardless of the value in DB.
     :param docker_batch_compile: If ``True``, compile all Makefiles within a repository in a single Docker container.
+    :param max_archive_size: If specified, only archive repositories whose size is not larger than the given
+        value (in bytes).
     :return: An entry to insert into the DB, or `None` if no operations are required.
     """
     repo_full_name = f"{repo_info.repo_owner}/{repo_info.repo_name}"
@@ -165,6 +176,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     archive_path = os.path.join(archive_folder, f"{repo_full_name}.tar.xz")
 
     repo_entry = repo_info.db_result
+    repo_size = None
     clone_success = None
 
     # Stage 1: Cloning from GitHub.
@@ -194,8 +206,10 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                     return None  # so we can try again in the future
 
             return PipelineResult(repo_info.repo_owner, repo_info.repo_name, clone_success=clone_success)
-        else:
-            ghcc.log(f"{repo_full_name} successfully cloned ({clone_result.time:.2f}s)", "success")
+
+        repo_size = ghcc.utils.get_folder_size(repo_path)
+        ghcc.log(f"{repo_full_name} successfully cloned ({clone_result.time:.2f}s, "
+                 f"{ghcc.utils.readable_size(repo_size)})", "success")
     else:
         if not repo_entry["clone_successful"]:
             return None
@@ -223,7 +237,6 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
             ghcc.log(f"No Makefiles found in {repo_full_name}, repository deleted", "warning")
             return PipelineResult(repo_info.repo_owner, repo_info.repo_name, clone_success=clone_success, makefiles=[])
         else:
-            # ghcc.log(f"Found {len(makefiles)} Makefiles in {repo_full_name}")
             pass
 
         # Stage 3: Compile each Makefile.
@@ -233,7 +246,8 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ghcc.log(f"Starting compilation for {repo_full_name}...")
 
         if docker_batch_compile:
-            num_succeeded, makefiles = _docker_batch_compile(repo_binary_dir, repo_path, compile_timeout)
+            num_succeeded, makefiles = _docker_batch_compile(
+                repo_info.index, repo_binary_dir, repo_path, compile_timeout)
         else:
             num_succeeded, makefiles = _compile_one_by_one(repo_binary_dir, makefile_dirs, compile_timeout)
         num_binaries = sum(len(makefile["binaries"]) for makefile in makefiles)
@@ -243,27 +257,32 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ghcc.log(msg, "success" if num_succeeded == len(makefile_dirs) else "warning")
 
         # Stage 4: Clean and zip repo.
-        ghcc.clean(repo_path)
-        os.makedirs(os.path.split(archive_path)[0], exist_ok=True)
-        try:
-            ghcc.utils.run_command(["tar", "cJf", archive_path, repo_path], timeout=clone_timeout)
-            compress_success = True
-        except subprocess.TimeoutExpired:
-            ghcc.log(f"Compression timeout for {repo_full_name}, giving up", "error")
-            compress_success = False
-            if os.path.exists(archive_path):
-                os.remove(archive_path)
-        except subprocess.CalledProcessError as e:
-            ghcc.log(f"Unknown error when compression {repo_full_name}. Captured output: '{e.output}'", "error")
-            compress_success = False
-        if compress_success:
-            shutil.rmtree(repo_path)
-            ghcc.log(f"{repo_full_name} compressed, folder removed", "info")
-        elif os.path.exists(archive_path):
+        if max_archive_size is not None and repo_size > max_archive_size:
             os.remove(archive_path)
+            ghcc.log(f"Removed {repo_full_name} because repository size ({ghcc.utils.readable_size(repo_size)} "
+                     f"exceeds limits", "info")
+        else:
+            ghcc.clean(repo_path)
+            os.makedirs(os.path.split(archive_path)[0], exist_ok=True)
+            try:
+                ghcc.utils.run_command(["tar", "cJf", archive_path, repo_path], timeout=clone_timeout)
+                compress_success = True
+            except subprocess.TimeoutExpired:
+                ghcc.log(f"Compression timeout for {repo_full_name}, giving up", "error")
+                compress_success = False
+                if os.path.exists(archive_path):
+                    os.remove(archive_path)
+            except subprocess.CalledProcessError as e:
+                ghcc.log(f"Unknown error when compression {repo_full_name}. Captured output: '{e.output}'", "error")
+                compress_success = False
+            if compress_success:
+                shutil.rmtree(repo_path)
+                ghcc.log(f"Compressed {repo_full_name}, folder removed", "info")
+            elif os.path.exists(archive_path):
+                os.remove(archive_path)
 
-    return PipelineResult(repo_info.repo_owner, repo_info.repo_name,
-                          clone_success=clone_success, makefiles=makefiles)
+    return PipelineResult(repo_info.repo_owner, repo_info.repo_name, clone_success=clone_success,
+                          repo_size=repo_size, makefiles=makefiles)
 
 
 def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
@@ -271,7 +290,8 @@ def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
         (entry["repo_owner"], entry["repo_name"]): entry
         for entry in db.collection.find()
     }
-    ghcc.log("All entries loaded from DB")
+    ghcc.log(f"{len(db_entries)} entries loaded from DB")
+    index = 0
     with open(repo_list_path, "r") as repo_file:
         for line in repo_file:
             if not line:
@@ -280,7 +300,8 @@ def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
             repo_owner, repo_name = url.rstrip("/").split("/")[-2:]
             # db_result = db.get(repo_owner, repo_name)
             db_result = db_entries.get((repo_owner, repo_name), None)
-            yield RepoInfo(repo_owner, repo_name, db_result)
+            yield RepoInfo(index, repo_owner, repo_name, db_result)
+            index += 1
 
 
 def main():
@@ -298,7 +319,8 @@ def main():
             clone_and_compile,
             clone_folder=args.clone_folder, binary_folder=args.binary_folder, archive_folder=args.archive_folder,
             clone_timeout=args.clone_timeout, compile_timeout=args.compile_timeout,
-            force_recompile=args.force_recompile, docker_batch_compile=args.docker_batch_compile)
+            force_recompile=args.force_recompile, docker_batch_compile=args.docker_batch_compile,
+            max_archive_size=args.max_archive_size)
         repo_count = 0
         # for result in map(pipeline_fn, iterator):
         for result in pool.imap_unordered(pipeline_fn, iterator):
@@ -310,7 +332,8 @@ def main():
             result: PipelineResult
             repo_owner, repo_name = result.repo_owner, result.repo_name
             if result.clone_success is not None:
-                db.add_repo(repo_owner, repo_name, result.clone_success)
+                repo_size = result.repo_size or -1  # a value of zero is probably also wrong
+                db.add_repo(repo_owner, repo_name, result.clone_success, repo_size=repo_size)
             if result.makefiles is not None:
                 try:
                     db.update_makefile(repo_owner, repo_name, result.makefiles)
@@ -323,14 +346,13 @@ def main():
     except BlockingIOError:
         pool.close()
         pool.terminate()
-        ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
     finally:
         pool.close()
         try:
             pool.join()
         except KeyboardInterrupt:
             pool.terminate()
-            ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
+        ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
 
 
 if __name__ == '__main__':
