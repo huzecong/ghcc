@@ -11,13 +11,22 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
 args = parser.parse_args()
 
+SRC_REPO_PATH = "/usr/src/repo"
+REPO_PATH = "/usr/src/repo_copy"
+BINARY_PATH = "/usr/src/bin"
+
 
 def main():
-    makefile_dirs = ghcc.find_makefiles("/usr/src/repo")
+    try:
+        shutil.copytree(SRC_REPO_PATH, REPO_PATH)
+    except shutil.Error:
+        pass  # `shutil.copytree` follows symlinks, which could be broken
+    makefile_dirs = ghcc.find_makefiles(REPO_PATH)
 
     # Stage 3: Compile each Makefile.
     num_succeeded = 0
     makefiles = []
+    binary_paths = []
     remaining_time = args.compile_timeout
     for make_dir in makefile_dirs:
         if remaining_time <= 0.0:
@@ -37,14 +46,16 @@ def main():
                     hash_obj.update(f.read())
                 digest = hash_obj.hexdigest()
                 sha256.append(digest)
-                shutil.move(path, os.path.join("/usr/src/bin", digest))
+                binary_path = os.path.join(BINARY_PATH, digest)
+                binary_paths.append(binary_path)
+                shutil.move(path, binary_path)
             makefiles.append({
                 "directory": make_dir,
                 "binaries": compile_result.elf_files,
                 "sha256": sha256,
             })
 
-    with open("/usr/src/bin/log.txt", "w") as f:
+    with open(os.path.join(BINARY_PATH, "log.txt"), "w") as f:
         f.write(f"{num_succeeded}\n")
         f.write(f"{len(makefiles)}\n")
         for makefile in makefiles:
@@ -54,6 +65,7 @@ def main():
             f.write(f"{len(binaries)} {directory}\n")
             for sha, path in zip(sha256, binaries):
                 f.write(f"{sha} {path}\n")
+    ghcc.utils.run_command(["chmod", "-R", "g+w", BINARY_PATH])
 
 
 if __name__ == '__main__':

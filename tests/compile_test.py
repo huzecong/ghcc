@@ -68,7 +68,7 @@ class CompileTest(unittest.TestCase):
     def test_docker_batch_compile(self):
         binary_dir = os.path.join(self.tempdir.name, "_bin")
         os.makedirs(binary_dir)
-        num_succeeded, makefiles = _docker_batch_compile(binary_dir, self.directory, 20)
+        num_succeeded, makefiles = _docker_batch_compile(0, binary_dir, self.directory, 20)
         assert num_succeeded == 1
         assert len(makefiles) == 1
         assert set(self.target_elfs) == set(makefiles[0]["binaries"])

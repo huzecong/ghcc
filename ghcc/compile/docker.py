@@ -19,7 +19,8 @@ def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None
         because a shell is always spawn in the entry point.
     :param cwd: The working directory of the command to run. If None, uses the default (probably user home).
     :param user: The user ID to use inside the Docker container. Additionally, group ID can be specified by passing
-        a tuple of two `int`\ s for this argument. If not specified, the current user and group IDs are used.
+        a tuple of two `int`\ s for this argument. If not specified, the current user and group IDs are used. As a
+        special case, pass in ``0`` to run as root.
     :param directory_mapping: Mapping of host directories to container paths. Mapping is performed via "bind mount".
     :param timeout: Maximum running time for the command. If running time exceeds the specified limit,
         ``subprocess.TimeoutExpired`` is thrown.
@@ -30,23 +31,25 @@ def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None
         command = ' '.join(command)
     command = f"'{command}'"
 
-    # Assign user and group IDs based on `user` argument.
-    user_id: Union[str, int] = "`id -u $USER`"
-    group_id: Union[str, int] = "`id -g $USER`"
-    if user is not None:
-        if isinstance(user, tuple):
-            user_id, group_id = user
-        else:
-            user_id = user
-
     # Construct the `docker run` command.
     docker_command = ["docker", "run", "--rm"]
     for host, container in (directory_mapping or {}).items():
         docker_command.extend(["-v", f"{os.path.abspath(host)}:{container}"])
     if cwd is not None:
         docker_command.extend(["-w", cwd])
-    docker_command.extend(["-e", f"LOCAL_USER_ID={user_id}"])
-    docker_command.extend(["-e", f"LOCAL_GROUP_ID={group_id}"])
+
+    # Assign user and group IDs based on `user` argument.
+    if user != 0:
+        user_id: Union[str, int] = "`id -u $USER`"
+        group_id: Union[str, int] = "`id -g $USER`"
+        if user is not None:
+            if isinstance(user, tuple):
+                user_id, group_id = user
+            else:
+                user_id = user
+        docker_command.extend(["-e", f"LOCAL_USER_ID={user_id}"])
+        docker_command.extend(["-e", f"LOCAL_GROUP_ID={group_id}"])
+
     docker_command.append("gcc-custom")
     if timeout is not None:
         # Timeout is implemented by calling `timeout` inside Docker container.

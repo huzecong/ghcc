@@ -107,7 +107,7 @@ if __name__ == '__main__':
         confirm = input("This will drop the entire database. Confirm? [y/N]")
         if confirm.lower() in ["y", "yes"]:
             db = Database()
-            db.collection.delete_many()
+            db.collection.delete_many({})
             db.close()
             print("Database dropped.")
         else:

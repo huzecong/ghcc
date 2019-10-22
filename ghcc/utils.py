@@ -1,6 +1,9 @@
+import functools
+import multiprocessing
 import subprocess
 import sys
 import tempfile
+import types
 from typing import Any, Dict, List, NamedTuple, Optional, Type, TypeVar, Union
 
 import psutil
@@ -12,11 +15,33 @@ __all__ = [
     "CommandResult",
     "run_command",
     "get_folder_size",
+    "readable_size",
     "get_file_lines",
     "register_ipython_excepthook",
+    "exception_wrapper",
     "to_dict",
     "to_namedtuple",
 ]
+
+
+class Pool:
+    r"""A wrapper over ``multiprocessing.Pool`` that uses single-threaded execution when :attr:`processes` is zero.
+    """
+
+    def __new__(cls, processes: int, *args, **kwargs):
+        if processes > 0:
+            return multiprocessing.Pool(processes, *args, **kwargs)
+        return super().__new__(cls)  # return a mock Pool instance.
+
+    def imap_unordered(self, fn, iterator):
+        yield from map(fn, iterator)
+
+    @staticmethod
+    def _no_op(self, *args, **kwargs):
+        pass
+
+    def __getattr__(self, item):
+        return types.MethodType(Pool._no_op, self)  # no-op for everything else
 
 
 def _run_command_retry_logger(retry_state: tenacity.RetryCallState) -> None:
@@ -34,6 +59,7 @@ class CommandResult(NamedTuple):
     command: List[str]
     return_code: int
     captured_output: Optional[bytes]
+
 
 @tenacity.retry(retry=tenacity.retry_if_exception_type(OSError), reraise=True,
                 stop=tenacity.stop_after_attempt(6),  # retry 5 times
@@ -124,6 +150,24 @@ def register_ipython_excepthook() -> None:
 
     ipython_hook = ultratb.FormattedTB(mode='Context', color_scheme='Linux', call_pdb=1)
     sys.excepthook = excepthook
+
+
+def exception_wrapper(handler_fn):
+    r"""Function decorator that calls the specified handler function when a exception occurs inside the decorated
+    function.
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                return handler_fn(e, *args, **kwargs)
+
+        return wrapped
+
+    return decorator
 
 
 def to_dict(nm_tpl: NamedTuple) -> Dict[str, Any]:

@@ -36,7 +36,9 @@ def clean(repo_folder: str) -> None:
 
     :param repo_folder: Path to the Git repository.
     """
-    run_command(["git", "clean", "-f", "-x", "-d"], cwd=repo_folder)
+    run_command(["git", "clean", "-xffd"], cwd=repo_folder)  # use `-f` twice to really clean everything
+    run_command(["git", "submodule", "foreach", "--recursive", "git", "clean", "-xffd"],  # clean all submodules
+                cwd=repo_folder),
 
 
 def clone(repo_owner: str, repo_name: str, clone_folder: str,

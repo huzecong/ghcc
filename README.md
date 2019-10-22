@@ -17,9 +17,14 @@ You will need a list of GitHub repository URLs to run the code. To run, simply e
 ```bash
 python main.py \
     --repo-list-file path/to/your/list \
-    --clone-folder c_repos/ \
+    --clone-folder repos/ \
     --binary-folder binaries/ \
     --n-procs 32
+```
+
+Additionally, if something messed up seriously, drop the database by:
+```bash
+python -m ghcc.database clear
 ```
 
 ## Heuristics for Compilation
@@ -50,3 +55,5 @@ describe what is done to (partly) ensure safety of the host machine when compili
 
    What we can do is: for each container we spawn, create a user that has the same GID as the host user, but with a
    distinct UID, and call `ulimit` for that user. This serves as a workaround for per-container limits.
+   
+   Don't forget to `chmod g+w` for files that need to be accessed from host.

@@ -10,6 +10,7 @@ from termcolor import colored
 __all__ = [
     "set_log_file",
     "log",
+    "set_logging_level",
 ]
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,16 @@ LOGGING_MAP = {
     "error": logger.error,
     "info": logger.info,
 }
+
+LEVEL_MAP = {
+    "success": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "info": logging.INFO,
+    "quiet": 999,
+}
+manager = multiprocessing.Manager()
+_CONSOLE_LOGGING_LEVEL = manager.Value('i', LEVEL_MAP["info"])
 
 
 class MultiprocessingFileHandler(logging.Handler):
@@ -108,14 +119,31 @@ def set_log_file(path: str, fmt: str = "%(asctime)s %(levelname)s: %(message)s")
     logger.addHandler(handler)
 
 
-def log(msg: str, level: str = "info") -> None:
+def log(msg: str, level: str = "info", force_console: bool = False) -> None:
     r"""Write a line of log with the specified logging level.
 
     :param msg: Message to log.
     :param level: Logging level. Available options are ``success``, ``warning``, ``error``, and ``info``.
+    :param force_console: If ``True``, will write to console regardless of logging level setting.
     """
     if level not in LOGGING_MAP:
         raise ValueError(f"Incorrect logging level '{level}'")
-    time_str = time.strftime("[%Y-%m-%d %H:%M:%S]")
-    print(colored(time_str, COLOR_MAP[level]), msg, flush=True)
+    if force_console or LEVEL_MAP[level] >= _CONSOLE_LOGGING_LEVEL.get():
+        time_str = time.strftime("[%Y-%m-%d %H:%M:%S]")
+        print(colored(time_str, COLOR_MAP[level]), msg, flush=True)
     LOGGING_MAP[level](msg)
+
+
+def set_logging_level(level: str, console: bool = True, file: bool = True) -> None:
+    r"""Set the global logging level to the specified level.
+
+    :param level: Logging level.
+    :param console: If ``True``, the specified logging level applies to console output.
+    :param file: If ``True``, the specified logging level applies to file output.
+    """
+    if level not in LEVEL_MAP:
+        raise ValueError(f"Incorrect logging level '{level}'")
+    if console:
+        _CONSOLE_LOGGING_LEVEL.set(LEVEL_MAP[level])
+    if file:
+        logger.setLevel(LEVEL_MAP[level])
