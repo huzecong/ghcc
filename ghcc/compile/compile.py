@@ -10,7 +10,7 @@ from ghcc.utils import run_command
 
 MOCK_PATH = os.path.abspath(os.path.join(os.path.split(__file__)[0], "..", "..", "scripts", "mock_path"))
 
-ELF_FILE_TAG = "ELF"  # Linux
+ELF_FILE_TAG = b"ELF"  # Linux
 
 __all__ = [
     "find_makefiles",
@@ -85,7 +85,8 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None) -> Co
 
         # Inspect each file and find ELF files.
         for file in diff_files:
-            output = subprocess.check_output(["file", os.path.join(directory, file)], timeout=10).decode('utf-8')
+            path = os.path.join(directory, file)
+            output = subprocess.check_output(["file", ], timeout=10)
             output = output[len(file):]  # first part is file name
             if ELF_FILE_TAG in output:
                 result.elf_files.append(file)

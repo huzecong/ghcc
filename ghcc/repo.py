@@ -36,9 +36,16 @@ def clean(repo_folder: str) -> None:
 
     :param repo_folder: Path to the Git repository.
     """
-    run_command(["git", "clean", "-xffd"], cwd=repo_folder)  # use `-f` twice to really clean everything
-    run_command(["git", "submodule", "foreach", "--recursive", "git", "clean", "-xffd"],  # clean all submodules
-                cwd=repo_folder),
+    try:
+        run_command(["git", "clean", "-xffd"], cwd=repo_folder)  # use `-f` twice to really clean everything
+    except subprocess.CalledProcessError:
+        pass  # ignore errors
+    try:
+        run_command(["git", "submodule", "foreach", "--recursive", "git", "clean", "-xffd"],  # clean all submodules
+                    cwd=repo_folder)
+    except subprocess.CalledProcessError:
+        pass  # ignore errors
+    run_command(["git", "reset", "--hard"], cwd=repo_folder)  # reset modified files
 
 
 def clone(repo_owner: str, repo_name: str, clone_folder: str,

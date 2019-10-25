@@ -22,6 +22,13 @@ python main.py \
     --n-procs 32
 ```
 
+If compilation is interrupted, remember to always purge leftover repositories by calling:
+```bash
+./clean_repos.py /path/to/clone/folder
+``` 
+This is because intermediate files are created under different permissions, and we need root privileges (sneakily
+obtained via Docker) to purge those files.
+
 Additionally, if something messed up seriously, drop the database by:
 ```bash
 python -m ghcc.database clear

@@ -152,14 +152,14 @@ def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
 
 def exception_handler(e, *args, **kwargs):
     repo_info: RepoInfo = args[0] if len(args) > 0 else kwargs["repo_info"]
-    exc_msg = f"<{e.__class__.__qualname__} {e}"
+    exc_msg = f"<{e.__class__.__qualname__}> {e}"
     if isinstance(e, subprocess.CalledProcessError) and e.output is not None:
         exc_msg += f" Captured output:\n{e.output.decode('utf-8')}"
     else:
         ghcc.log(traceback.format_exc(), "error")
 
     ghcc.log(f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}: {exc_msg}", "error")
-    raise e
+    # raise e
 
 
 @ghcc.utils.exception_wrapper(exception_handler)
@@ -354,11 +354,14 @@ def main():
             repo_count += 1
             if repo_count % 100 == 0:
                 ghcc.log(f"Processed {repo_count} repositories", force_console=True)
+            if result is None:
+                continue
             result: PipelineResult
             repo_owner, repo_name = result.repo_owner, result.repo_name
             if result.clone_success is not None:
                 repo_size = result.repo_size or -1  # a value of zero is probably also wrong
                 db.add_repo(repo_owner, repo_name, result.clone_success, repo_size=repo_size)
+                ghcc.log(f"Added {repo_owner}/{repo_name} to DB")
             if result.makefiles is not None:
                 try:
                     db.update_makefile(repo_owner, repo_name, result.makefiles)

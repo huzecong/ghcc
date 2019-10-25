@@ -17,10 +17,12 @@ BINARY_PATH = "/usr/src/bin"
 
 
 def main():
-    try:
-        shutil.copytree(SRC_REPO_PATH, REPO_PATH)
-    except shutil.Error:
-        pass  # `shutil.copytree` follows symlinks, which could be broken
+    # try:
+    #     shutil.copytree(SRC_REPO_PATH, REPO_PATH)
+    # except shutil.Error:
+    #     pass  # `shutil.copytree` follows symlinks, which could be broken
+    global REPO_PATH
+    REPO_PATH = SRC_REPO_PATH
     makefile_dirs = ghcc.find_makefiles(REPO_PATH)
 
     # Stage 3: Compile each Makefile.
@@ -54,6 +56,7 @@ def main():
                 "binaries": compile_result.elf_files,
                 "sha256": sha256,
             })
+    ghcc.clean(REPO_PATH)
 
     with open(os.path.join(BINARY_PATH, "log.txt"), "w") as f:
         f.write(f"{num_succeeded}\n")
@@ -66,6 +69,7 @@ def main():
             for sha, path in zip(sha256, binaries):
                 f.write(f"{sha} {path}\n")
     ghcc.utils.run_command(["chmod", "-R", "g+w", BINARY_PATH])
+    ghcc.utils.run_command(["chmod", "-R", "g+w", SRC_REPO_PATH])
 
 
 if __name__ == '__main__':
