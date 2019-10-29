@@ -1,10 +1,8 @@
-import argparse
 import sys
 from datetime import datetime
 from typing import List, Optional
 
 import pymongo
-from bson import ObjectId
 from mypy_extensions import TypedDict
 
 __all__ = [

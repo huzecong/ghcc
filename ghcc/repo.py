@@ -37,6 +37,10 @@ def clean(repo_folder: str) -> None:
     :param repo_folder: Path to the Git repository.
     """
     try:
+        run_command(["git", "reset", "--hard"], cwd=repo_folder)  # reset modified files
+    except subprocess.CalledProcessError:
+        pass  # ignore errors
+    try:
         run_command(["git", "clean", "-xffd"], cwd=repo_folder)  # use `-f` twice to really clean everything
     except subprocess.CalledProcessError:
         pass  # ignore errors
@@ -45,7 +49,6 @@ def clean(repo_folder: str) -> None:
                     cwd=repo_folder)
     except subprocess.CalledProcessError:
         pass  # ignore errors
-    run_command(["git", "reset", "--hard"], cwd=repo_folder)  # reset modified files
 
 
 def clone(repo_owner: str, repo_name: str, clone_folder: str,

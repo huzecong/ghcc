@@ -6,7 +6,6 @@ This is to make use of the repositories cloned before the database and compilati
 import argparse
 import contextlib
 import os
-import subprocess
 from typing import List, Tuple
 
 import tqdm

@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import time
 import traceback
-from typing import Iterator, List, NamedTuple, Optional, Tuple
+from typing import Iterator, List, NamedTuple, Optional
 
 from mypy_extensions import TypedDict
 
@@ -38,6 +38,8 @@ def parse_args():
     parser.add_argument("--compression-type", choices=["gzip", "xz"], default="gzip")
     parser.add_argument("--max-archive-size", type=int,
                         default=100 * 1024 * 1024)  # only archive repos no larger than 100MB.
+    parser.add_argument("--record-libraries", type=str,
+                        default=None)  # gather libraries used in Makefiles and print to the specified file
     parser.add_argument("--logging-level", choices=["info", "warning", "error", "quiet"], default="info")
     args = parser.parse_args()
     return args
@@ -56,6 +58,7 @@ class PipelineResult(NamedTuple):
     clone_success: Optional[bool] = None
     repo_size: Optional[int] = None
     makefiles: Optional[List[ghcc.RepoMakefileEntry]] = None
+    libraries: Optional[List[str]] = None
 
 
 def contains_in_file(file_path: str, text: str) -> bool:
@@ -78,11 +81,16 @@ class MakefileInfo(TypedDict):
     sha256: List[str]
 
 
-RepoCompileResult = Tuple[int, List[MakefileInfo]]
+class RepoCompileResult(NamedTuple):
+    num_succeeded: int
+    makefiles: List[MakefileInfo]
 
 
 def _compile_one_by_one(repo_binary_dir: str, repo_path: str, makefile_dirs: List[str],
-                        compile_timeout: Optional[int]) -> RepoCompileResult:
+                        compile_timeout: Optional[int], record_libraries: bool = False) -> RepoCompileResult:
+    env = None
+    if record_libraries:
+        env = {"MOCK_GCC_LIBRARY_LOG": os.path.join(repo_binary_dir, "libraries.txt")}
     num_succeeded = 0
     makefiles: List[MakefileInfo] = []
     remaining_time = compile_timeout
@@ -90,7 +98,7 @@ def _compile_one_by_one(repo_binary_dir: str, repo_path: str, makefile_dirs: Lis
         if remaining_time <= 0.0:
             break
         start_time = time.time()
-        compile_result = ghcc.docker_make(make_dir, timeout=remaining_time)
+        compile_result = ghcc.docker_make(make_dir, timeout=remaining_time, env=env)
         elapsed_time = time.time() - start_time
         remaining_time -= elapsed_time
         if compile_result.success:
@@ -111,21 +119,23 @@ def _compile_one_by_one(repo_binary_dir: str, repo_path: str, makefile_dirs: Lis
                 "sha256": sha256,
             })
     ghcc.clean(repo_path)
-    return num_succeeded, makefiles
+    return RepoCompileResult(num_succeeded, makefiles)
 
 
 def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
-                          compile_timeout: Optional[int]) -> RepoCompileResult:
+                          compile_timeout: Optional[int], record_libraries: bool = False) -> RepoCompileResult:
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
         # get the results file if any compilation task timeouts.
         ret = ghcc.run_docker_command([
             "batch_make.py",
+            *(["--record-libraries"] if record_libraries else []),
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else [])],
             user=(index % 10000) + 30000,  # user IDs 30000 ~ 39999
             directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"}, return_output=True)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         raise e
+
     with open(os.path.join(repo_binary_dir, "log.txt")) as f:
         lines = [line.strip() for line in f if line]
     os.remove(os.path.join(repo_binary_dir, "log.txt"))
@@ -147,7 +157,8 @@ def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
             "binaries": binaries,
             "sha256": sha256,
         })
-    return num_succeeded, makefiles
+
+    return RepoCompileResult(num_succeeded, makefiles)
 
 
 def exception_handler(e, *args, **kwargs):
@@ -166,7 +177,8 @@ def exception_handler(e, *args, **kwargs):
 def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str, archive_folder: str,
                       clone_timeout: Optional[int] = None, compile_timeout: Optional[int] = None,
                       force_recompile: bool = False, docker_batch_compile: bool = True,
-                      max_archive_size: Optional[int] = None, compression_type: str = "gzip") -> PipelineResult:
+                      max_archive_size: Optional[int] = None, compression_type: str = "gzip",
+                      record_libraries: bool = False) -> PipelineResult:
     r"""Perform the entire pipeline.
 
     :param repo_info: Information about the repository.
@@ -186,6 +198,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         value (in bytes).
     :param compression_type: The file type of the archive to produce. Valid values are ``"gzip"`` (faster) and
         ``"xz"`` (smaller).
+    :param record_libraries: If ``True``, record the libraries used in compilation.
     :return: An entry to insert into the DB, or `None` if no operations are required.
     """
     repo_full_name = f"{repo_info.repo_owner}/{repo_info.repo_name}"
@@ -240,6 +253,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
             return PipelineResult(repo_info.repo_owner, repo_info.repo_name)  # return dummy info
 
     makefiles = None
+    libraries = None
     if not repo_entry or not repo_entry["compiled"] or force_recompile:
         # # SPECIAL CHECK: Do not attempt to compile OS kernels!
         # kernel_name = None
@@ -271,16 +285,24 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ghcc.log(f"Starting compilation for {repo_full_name}...")
 
         if docker_batch_compile:
-            num_succeeded, makefiles = _docker_batch_compile(
-                repo_info.index, repo_binary_dir, repo_path, compile_timeout)
+            compile_result = _docker_batch_compile(
+                repo_info.index, repo_binary_dir, repo_path, compile_timeout, record_libraries)
         else:
-            num_succeeded, makefiles = _compile_one_by_one(
-                repo_binary_dir, repo_path, makefile_dirs, compile_timeout)
+            compile_result = _compile_one_by_one(
+                repo_binary_dir, repo_path, makefile_dirs, compile_timeout, record_libraries)
+        makefiles = compile_result.makefiles
+        if record_libraries:
+            library_log_path = os.path.join(repo_binary_dir, "libraries.txt")
+            if os.path.exists(library_log_path):
+                with open(library_log_path) as f:
+                    libraries = list(set(f.read().split()))
+            else:
+                libraries = set()
         num_binaries = sum(len(makefile["binaries"]) for makefile in makefiles)
 
-        msg = f"{num_succeeded} ({len(makefiles)}) out of {len(makefile_dirs)} Makefile(s) in {repo_full_name} " \
-              f"compiled (partially), yielding {num_binaries} binaries"
-        ghcc.log(msg, "success" if num_succeeded == len(makefile_dirs) else "warning")
+        msg = f"{compile_result.num_succeeded} ({len(makefiles)}) out of {len(makefile_dirs)} Makefile(s) " \
+              f"in {repo_full_name} compiled (partially), yielding {num_binaries} binaries"
+        ghcc.log(msg, "success" if compile_result.num_succeeded == len(makefile_dirs) else "warning")
 
         # Stage 4: Clean and zip repo.
         if max_archive_size is not None and repo_size > max_archive_size:
@@ -305,7 +327,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                 os.remove(archive_path)
 
     return PipelineResult(repo_info.repo_owner, repo_info.repo_name, clone_success=clone_success,
-                          repo_size=repo_size, makefiles=makefiles)
+                          repo_size=repo_size, makefiles=makefiles, libraries=libraries)
 
 
 def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
@@ -336,9 +358,17 @@ def main():
     ghcc.set_log_file(args.log_file)
     ghcc.set_logging_level(args.logging_level, console=True, file=False)
 
+    if os.path.exists(args.clone_folder):
+        ghcc.log(f"Removing contents of clone folder '{args.clone_folder}'...", "warning", force_console=True)
+        ghcc.run_docker_command(["rm", "-rf", "/usr/src/*"], user=0, directory_mapping={args.clone_folder: "/usr/src"})
+
     ghcc.log("Crawling starts...", "warning", force_console=True)
     pool = ghcc.utils.Pool(processes=args.n_procs)
     db = ghcc.Database()
+    libraries = set()
+    if args.record_libraries is not None and os.path.exists(args.record_libraries):
+        with open(args.record_libraries, "r") as f:
+            libraries = set(f.read().split())
 
     try:
         iterator = iter_repos(db, args.repo_list_file)
@@ -347,7 +377,8 @@ def main():
             clone_folder=args.clone_folder, binary_folder=args.binary_folder, archive_folder=args.archive_folder,
             clone_timeout=args.clone_timeout, compile_timeout=args.compile_timeout,
             force_recompile=args.force_recompile, docker_batch_compile=args.docker_batch_compile,
-            max_archive_size=args.max_archive_size, compression_type=args.compression_type)
+            max_archive_size=args.max_archive_size, compression_type=args.compression_type,
+            record_libraries=(args.record_libraries is not None))
         repo_count = 0
         # for result in map(pipeline_fn, iterator):
         for result in pool.imap_unordered(pipeline_fn, iterator):
@@ -368,6 +399,11 @@ def main():
                 except ValueError as e:  # mismatching number of makefiles
                     if not args.force_recompile:
                         raise e
+            if result.libraries is not None:
+                libraries.update(result.libraries)
+                if repo_count % 10 == 0:  # flush every 10 repos
+                    with open(args.record_libraries, "w") as f:
+                        f.write("\n".join(libraries))
 
     except KeyboardInterrupt:
         print("Press Ctrl-C again to force terminate...")
@@ -376,6 +412,9 @@ def main():
         pool.close()
         pool.terminate()
     finally:
+        if args.record_libraries is not None:
+            with open(args.record_libraries, "w") as f:
+                f.write("\n".join(libraries))
         if args.n_procs > 0:
             pool.close()
             try:

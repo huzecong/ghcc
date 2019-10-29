@@ -3,8 +3,9 @@ import multiprocessing
 import subprocess
 import sys
 import tempfile
+import threading
 import types
-from typing import Any, Dict, List, NamedTuple, Optional, Type, TypeVar, Union
+from typing import Any, Dict, List, NamedTuple, Optional, TextIO, Type, TypeVar, Union
 
 import psutil
 import tenacity
@@ -12,6 +13,8 @@ import tenacity
 from ghcc.logging import log
 
 __all__ = [
+    "Pool",
+    "error_wrapper",
     "CommandResult",
     "run_command",
     "get_folder_size",
@@ -61,6 +64,33 @@ class CommandResult(NamedTuple):
     captured_output: Optional[bytes]
 
 
+def error_wrapper(err: Exception) -> Exception:
+    r"""Wrap exceptions raised in `subprocess` to output captured output by default.
+    """
+    if not isinstance(err, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
+        return err
+
+    def __str__(self):
+        string = super(self.__class__, self).__str__()
+        if self.output:
+            try:
+                output = self.output.decode('utf-8')
+            except UnicodeEncodeError:  # ignore output
+                string += "\nFailed to parse output."
+            else:
+                string += "\nCaptured output:\n" + '\n'.join([f'\t{line}' for line in output.split('\n')])
+        else:
+            string += "\nNo output was generated."
+        return string
+
+    # Dynamically create a new type that overrides __str__, because replacing __str__ on instances don't work.
+    err_type = type(err)
+    new_type = type(err_type.__name__, (err_type,), {"__str__": __str__})
+
+    err.__class__ = new_type
+    return err
+
+
 @tenacity.retry(retry=tenacity.retry_if_exception_type(OSError), reraise=True,
                 stop=tenacity.stop_after_attempt(6),  # retry 5 times
                 wait=tenacity.wait_random_exponential(multiplier=2, max=60),
@@ -87,7 +117,7 @@ def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] =
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             f.seek(0)
             e.output = f.read()
-            raise e from None
+            raise error_wrapper(e) from None
         if return_output or ret.returncode != 0:
             f.seek(0)
             return CommandResult(args, ret.returncode, f.read())
@@ -179,3 +209,36 @@ NamedTupleType = TypeVar('NamedTupleType', bound=NamedTuple)
 
 def to_namedtuple(nm_tpl_type: Type[NamedTupleType], dic: Dict[str, Any]) -> NamedTupleType:
     return nm_tpl_type(**dic)
+
+
+class MultiprocessingFileWriter(TextIO):
+    """A multiprocessing file writer that allows multiple processes to write to the same file. Order is not guaranteed.
+
+    This is very similar to :class:`~ghcc.logging.MultiprocessingFileHandler`.
+    """
+
+    def __init__(self, path: str, mode: str = "a"):
+        self._file = open("path")
+        self._queue = multiprocessing.Queue(-1)
+
+        self._thread = threading.Thread(target=self._receive)
+        self._thread.daemon = True
+        self._thread.start()
+
+    def __enter__(self) -> TextIO:
+        return self._file
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._thread.join()
+        self._file.close()
+
+    def write(self, s: str):
+        self._queue.put_nowait(s)
+
+    def _receive(self):
+        while True:
+            try:
+                record = self._queue.get()
+                self._file.write(record)
+            except EOFError:
+                break

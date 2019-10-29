@@ -9,11 +9,16 @@ import ghcc
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
+parser.add_argument("--record-libraries", action="store_true", default=False)
 args = parser.parse_args()
 
 SRC_REPO_PATH = "/usr/src/repo"
 REPO_PATH = "/usr/src/repo_copy"
 BINARY_PATH = "/usr/src/bin"
+
+ENV = {
+    **({"MOCK_GCC_LIBRARY_LOG": os.path.join(BINARY_PATH, "libraries.txt")} if args.record_libraries else {}),
+}
 
 
 def main():
@@ -34,7 +39,7 @@ def main():
         if remaining_time <= 0.0:
             break
         start_time = time.time()
-        compile_result = ghcc.unsafe_make(make_dir, timeout=remaining_time)
+        compile_result = ghcc.unsafe_make(make_dir, timeout=remaining_time, env=ENV)
         elapsed_time = time.time() - start_time
         remaining_time -= elapsed_time
         if compile_result.success:

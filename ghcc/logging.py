@@ -13,33 +13,6 @@ __all__ = [
     "set_logging_level",
 ]
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-COLOR_MAP = {
-    "success": "green",
-    "warning": "yellow",
-    "error": "red",
-    "info": "white",
-}
-
-LOGGING_MAP = {
-    "success": logger.info,
-    "warning": logger.warning,
-    "error": logger.error,
-    "info": logger.info,
-}
-
-LEVEL_MAP = {
-    "success": logging.INFO,
-    "warning": logging.WARNING,
-    "error": logging.ERROR,
-    "info": logging.INFO,
-    "quiet": 999,
-}
-manager = multiprocessing.Manager()
-_CONSOLE_LOGGING_LEVEL = manager.Value('i', LEVEL_MAP["info"])
-
 
 class MultiprocessingFileHandler(logging.Handler):
     """multiprocessing log handler
@@ -103,17 +76,49 @@ class MultiprocessingFileHandler(logging.Handler):
         logging.Handler.close(self)
 
 
+def _remove_handlers(logger):
+    while len(logger.handlers) > 0:
+        handler = logger.handlers[0]
+        handler.close()
+        logger.removeHandler(handler)
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+_remove_handlers(logger)  # remove all default handlers
+
+COLOR_MAP = {
+    "success": "green",
+    "warning": "yellow",
+    "error": "red",
+    "info": "white",
+}
+
+LOGGING_MAP = {
+    "success": logger.info,
+    "warning": logger.warning,
+    "error": logger.error,
+    "info": logger.info,
+}
+
+LEVEL_MAP = {
+    "success": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "info": logging.INFO,
+    "quiet": 999,
+}
+manager = multiprocessing.Manager()
+_CONSOLE_LOGGING_LEVEL = manager.Value('i', LEVEL_MAP["info"])
+
+
 def set_log_file(path: str, fmt: str = "%(asctime)s %(levelname)s: %(message)s") -> None:
     r"""Set the path of the log file.
 
     :param path: Path to the log file.
     :param fmt: Logging format.
     """
-    while len(logger.handlers) > 0:
-        handler = logger.handlers[0]
-        handler.close()
-        logger.removeHandler(handler)
-
+    _remove_handlers(logger)
     handler = MultiprocessingFileHandler(path, mode="a")
     handler.setFormatter(logging.Formatter(fmt))
     logger.addHandler(handler)
@@ -131,7 +136,8 @@ def log(msg: str, level: str = "info", force_console: bool = False) -> None:
     if force_console or LEVEL_MAP[level] >= _CONSOLE_LOGGING_LEVEL.get():
         time_str = time.strftime("[%Y-%m-%d %H:%M:%S]")
         print(colored(time_str, COLOR_MAP[level]), msg, flush=True)
-    LOGGING_MAP[level](msg)
+    if logger.hasHandlers():
+        LOGGING_MAP[level](msg)
 
 
 def set_logging_level(level: str, console: bool = True, file: bool = True) -> None:

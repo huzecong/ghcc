@@ -1,7 +1,7 @@
 import os
+import subprocess
 import tempfile
 import unittest
-
 from typing import List
 
 import ghcc
@@ -11,12 +11,14 @@ from main import _docker_batch_compile
 class CompileTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
+        self.repo_owner = "pjreddie"
+        self.repo_name = "uwimg"
 
         # Clone an existing repo.
-        result = ghcc.clone("pjreddie", "uwimg", clone_folder=self.tempdir.name, skip_if_exists=False)
+        result = ghcc.clone(self.repo_owner, self.repo_name, clone_folder=self.tempdir.name, skip_if_exists=False)
         assert result.success is True, result.captured_output
 
-        self.directory = os.path.join(self.tempdir.name, result.repo_owner, result.repo_name)
+        self.directory = os.path.join(self.tempdir.name, self.repo_owner, self.repo_name)
         self.target_elfs = [
             "libuwimg.so",
             "obj/args.o",
@@ -68,10 +70,28 @@ class CompileTest(unittest.TestCase):
     def test_docker_batch_compile(self):
         binary_dir = os.path.join(self.tempdir.name, "_bin")
         os.makedirs(binary_dir)
-        num_succeeded, makefiles = _docker_batch_compile(0, binary_dir, self.directory, 20)
-        assert num_succeeded == 1
-        assert len(makefiles) == 1
-        assert set(self.target_elfs) == set(makefiles[0]["binaries"])
+        result = _docker_batch_compile(0, binary_dir, self.directory, 20, record_libraries=True)
+        assert result.num_succeeded == 1
+        assert len(result.makefiles) == 1
+        assert set(self.target_elfs) == set(result.makefiles[0]["binaries"])
 
-        elf_paths = [os.path.join(binary_dir, file) for file in makefiles[0]["sha256"]]
+        elf_paths = [os.path.join(binary_dir, file) for file in result.makefiles[0]["sha256"]]
         self._test_debug_info(elf_paths)
+
+    def test_gcc_library_log(self):
+        from ghcc.compile.compile import MOCK_PATH
+        library_log_path = os.path.join(self.tempdir.name, "libraries.txt")
+        env = {
+            b"PATH": f"{MOCK_PATH}:{os.environ['PATH']}".encode('utf-8'),
+            b"MOCK_GCC_LIBRARY_LOG": library_log_path.encode('utf-8'),
+        }
+        libraries = ["pthread", "m", "opencv", "openmp", "library_with_random_name"]
+        try:
+            ghcc.utils.run_command(
+                ["gcc", *[f"-l{lib}" for lib in libraries], "nonexistent_file.c"], env=env)
+        except subprocess.CalledProcessError:
+            pass  # error must occur because file is nonexistent
+        assert os.path.exists(library_log_path)
+        with open(library_log_path) as f:
+            recorded_libraries = f.read().split()
+            assert set(libraries) == set(recorded_libraries)

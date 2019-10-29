@@ -17,6 +17,7 @@ def main():
     parser.add_argument('-c', action='store_true')
     parser.add_argument('-O', nargs='?')
     parser.add_argument('-Wall', action='store_true')
+    parser.add_argument('-l', action='append')
     parser.add_argument('-mabi')  # ignored
     parser.add_argument('-march')  # ignored
     parser.add_argument('-mtune')  # ignored
@@ -28,9 +29,17 @@ def main():
     args, unknown_args = parser.parse_known_args(sys.argv[1:])
 
     # Remove the mock path from PATH to find the actual GCC
-    cur_path = os.path.split(__file__)[0]
+    cur_path = os.path.abspath(os.path.split(__file__)[0])
     all_paths = [os.path.abspath(path) for path in os.environ["PATH"].split(":")]
     env = {b"PATH": ':'.join(path for path in all_paths if path != cur_path).encode('utf-8')}
+
+    # Gather library names that the program is linked to.
+    # Note that this is only called if exception occurs, or GCC fails. This gets rid of libraries that are installed.
+    def write_libraries():
+        log_path = os.environ.get("MOCK_GCC_LIBRARY_LOG", "").strip()
+        if len(log_path) > 0 and args.l:
+            with open(log_path, "a") as f:
+                f.write('\n'.join(args.l) + '\n')
 
     filenames = filter_filenames(unknown_args)
     out_file = None
@@ -51,14 +60,18 @@ def main():
         gcc = "gcc"  # "gcc-4.7"
         # When multiple -O options are specified, the last one takes precedence.
         gcc_args = [gcc] + known_args + unknown_args + ["-o", out_file, "-O0", "-g"]
+        # Add linker options after files that use them.
+        gcc_args.extend([f"-l{lib}" for lib in (args.l or [])])
         sys.stderr.write("Mock GCC: " + ' '.join(gcc_args) + "\n")
         # Redirecting to a pipe could prevent GCC producing colored output.
         process = subprocess.Popen(gcc_args, stdout=sys.stdout, stderr=sys.stderr, env=env)
         process.wait()
         if process.returncode != 0:
+            write_libraries()
             sys.stderr.write(f"Return code: {process.returncode}\n")
             exit(process.returncode)
     except Exception as e:
+        write_libraries()
         sys.stderr.write(f"Mock GCC: Exception: {e}\n")
         exit(2)
 

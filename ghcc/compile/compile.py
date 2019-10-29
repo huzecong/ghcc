@@ -2,7 +2,7 @@ import os
 import subprocess
 import time
 from enum import Enum, auto
-from typing import List, NamedTuple, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 from ghcc.compile.docker import run_docker_command
 from ghcc.repo import clean
@@ -55,7 +55,8 @@ def _create_result(success: bool = False, elf_files: Optional[List[str]] = None,
     return CompileResult(success, elf_files=elf_files, error_type=error_type, captured_output=captured_output)
 
 
-def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None) -> CompileResult:
+def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None,
+                   env: Optional[Dict[str, str]] = None) -> CompileResult:
     directory = os.path.abspath(directory)
 
     try:
@@ -63,7 +64,7 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None) -> Co
         clean(directory)
 
         # Call the actual function for `make`.
-        make_fn(directory, timeout)
+        make_fn(directory, timeout, env)
         result = _create_result(True)
 
     except subprocess.TimeoutExpired as e:
@@ -86,7 +87,7 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None) -> Co
         # Inspect each file and find ELF files.
         for file in diff_files:
             path = os.path.join(directory, file)
-            output = subprocess.check_output(["file", ], timeout=10)
+            output = subprocess.check_output(["file", path], timeout=10)
             output = output[len(file):]  # first part is file name
             if ELF_FILE_TAG in output:
                 result.elf_files.append(file)
@@ -100,9 +101,10 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None) -> Co
     return result
 
 
-def _unsafe_make(directory: str, timeout: Optional[int] = None) -> None:
+def _unsafe_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> None:
     env = {
         b"PATH": f"{MOCK_PATH}:{os.environ['PATH']}".encode('utf-8'),
+        **{k.encode('utf-8'): v.encode('utf-8') for k, v in (env or {}).items()},
     }
     # Try running `./configure` if it exists.
     if os.path.isfile(os.path.join(directory, "configure")):
@@ -115,11 +117,10 @@ def _unsafe_make(directory: str, timeout: Optional[int] = None) -> None:
 
     # Make while ignoring errors.
     # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
-    # run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
     run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
 
 
-def unsafe_make(directory: str, timeout: Optional[int] = None) -> CompileResult:
+def unsafe_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
     r"""Run ``make`` in the given directory and collect compilation outputs.
 
     .. warning::
@@ -128,29 +129,30 @@ def unsafe_make(directory: str, timeout: Optional[int] = None) -> CompileResult:
 
     :param directory: Path to the directory containing the Makefile.
     :param timeout: Maximum time allowed for compilation, in seconds. Defaults to ``None`` (unlimited time).
+    :param env: The environment variables to use when calling ``make``.
     :return: An instance of :class:`CompileResult` indicating the result. Fields ``success`` and ``elf_files`` are not
         ``None``.
 
         - If compilation failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
     """
-    return _make_skeleton(_unsafe_make, directory, timeout)
+    return _make_skeleton(_unsafe_make, directory, timeout, env)
 
 
-def _docker_make(directory: str, timeout: Optional[int] = None):
+def _docker_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> None:
     if os.path.isfile(os.path.join(directory, "configure")):
         # Try running `./configure` if it exists.
         run_docker_command("chmod +x configure && ./configure && make --keep-going -j1",
                            cwd="/usr/src", directory_mapping={directory: "/usr/src"},
-                           timeout=timeout, shell=True)
+                           timeout=timeout, shell=True, env=env)
     else:
         # Make while ignoring errors.
         # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
         run_docker_command(["make", "--keep-going", "-j1"],
                            cwd="/usr/src", directory_mapping={directory: "/usr/src"},
-                           timeout=timeout)
+                           timeout=timeout, env=env)
 
 
-def docker_make(directory: str, timeout: Optional[int] = None) -> CompileResult:
+def docker_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
     r"""Run ``make`` within Docker and collect compilation outputs.
 
     .. note::
@@ -158,9 +160,10 @@ def docker_make(directory: str, timeout: Optional[int] = None) -> CompileResult:
 
     :param directory: Path to the directory containing the Makefile.
     :param timeout: Maximum time allowed for compilation, in seconds. Defaults to ``None`` (unlimited time).
+    :param env: The environment variables to use when calling ``make``.
     :return: An instance of :class:`CompileResult` indicating the result. Fields ``success`` and ``elf_files`` are not
         ``None``.
 
         - If compilation failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
     """
-    return _make_skeleton(_docker_make, directory, timeout)
+    return _make_skeleton(_docker_make, directory, timeout, env)

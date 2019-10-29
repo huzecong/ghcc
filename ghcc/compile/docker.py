@@ -2,7 +2,7 @@ import os
 import subprocess
 from typing import Dict, List, Optional, Tuple, Union
 
-from ghcc.utils import CommandResult, run_command
+from ghcc.utils import CommandResult, error_wrapper, run_command
 
 __all__ = [
     "run_docker_command",
@@ -59,5 +59,5 @@ def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None
 
     # Check whether exceeded timeout limit by inspecting return code.
     if ret.return_code == 124:
-        raise subprocess.TimeoutExpired(ret.command, timeout, output=ret.captured_output)
+        raise error_wrapper(subprocess.TimeoutExpired(ret.command, timeout, output=ret.captured_output))
     return ret
