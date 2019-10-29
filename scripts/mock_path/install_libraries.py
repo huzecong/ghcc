@@ -9,6 +9,7 @@ import ghcc
 
 parser = argparse.ArgumentParser()
 parser.add_argument("file", type=str)  # path to libraries log file
+parser.add_argument("--skip-to", type=str, default=None)  # name of library to skip to
 args = parser.parse_args()
 
 
@@ -46,6 +47,8 @@ int main() {
     packages_to_install = []
     ghcc.utils.run_command(["apt-get", "update"])  # refresh package index just in case
 
+    if args.skip_to is not None:
+        libraries = skip_until(args.skip_to, libraries)
     for lib in libraries:
         # Check if library is installed -- whether linking succeeds.
         if check_installed(lib):
@@ -64,10 +67,11 @@ int main() {
                  f"{libname}(-?[0-9.]+)?-dev",
                  libname]
         for name in names:
-            ret = ghcc.utils.run_command(["apt-cache", "search", "--quiet", name], timeout=10, return_output=True)
+            ret = ghcc.utils.run_command(["apt-cache", "--quiet", "search", name], timeout=10, return_output=True)
             packages = [line.split()[0] for line in ret.captured_output.decode('utf-8').split('\n') if line]
             if len(packages) > 0:
                 package = packages[0]
+                print(f"Trying {package} for {lib}")
                 ret = ghcc.utils.run_command(["apt-get", "install", "--dry-run", package], return_output=True)
                 match = re.search(r"(\d+) newly installed", ret.captured_output.decode('utf-8'))
                 if match.group(1):
