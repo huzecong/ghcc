@@ -27,12 +27,15 @@ If compilation is interrupted, remember to always purge leftover repositories by
 ./clean_repos.py /path/to/clone/folder
 ``` 
 This is because intermediate files are created under different permissions, and we need root privileges (sneakily
-obtained via Docker) to purge those files.
+obtained via Docker) to purge those files. This is also performed at the beginning of the `main.py` script.
 
 Additionally, if something messed up seriously, drop the database by:
 ```bash
 python -m ghcc.database clear
 ```
+
+If the code is modified, remember to rebuild the image since the `batch_make.py` script (run inside Docker to compile
+Makefiles) depends on the code.
 
 ## Heuristics for Compilation
 
@@ -41,6 +44,24 @@ The following procedure happens when compiling a Makefile:
 1. Check if a file named `configure` exists in the same directory.
     - If true, call `chmod +x configure && ./configure`
 2. Call `make --keep-going -j1`.
+
+## Collecting and Installing Libraries
+
+Most repositories require linking to external libraries. To collect libraries that are linked to in Makefiles, run the
+script with the flag `--record-libraries path/to/library_log.txt`. Only libraries in commands that failed to execute
+(GCC return code is non-zero) are recorded in the log file.
+
+After gathering the library log, run `install_libraries.py path/to/library_log.txt` to resolve libraries to package
+names (based on `apt-cache`). This step requires actually installing packages, so it's recommended to run it in a Docker
+environment:
+```bash
+docker run --rm \
+    -v /absolute/path/to/directory/:/usr/src/ \
+    gcc-custom \
+    "install_libraries.py /usr/src/library_log.txt"
+```
+This gives a list of packages to install. Add the list of packages to `Dockerfile` (the command that begins with
+`RUN apt-get install -y --no-install-recommends`) and rebuild the image to apply changes.
 
 ## Notes on Docker Safety
 
