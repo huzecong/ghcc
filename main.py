@@ -164,9 +164,7 @@ def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
 def exception_handler(e, *args, **kwargs):
     repo_info: RepoInfo = args[0] if len(args) > 0 else kwargs["repo_info"]
     exc_msg = f"<{e.__class__.__qualname__}> {e}"
-    if isinstance(e, subprocess.CalledProcessError) and e.output is not None:
-        exc_msg += f" Captured output:\n{e.output.decode('utf-8')}"
-    else:
+    if not (isinstance(e, subprocess.CalledProcessError) and e.output is not None):
         ghcc.log(traceback.format_exc(), "error")
 
     ghcc.log(f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}: {exc_msg}", "error")
@@ -394,11 +392,7 @@ def main():
                 db.add_repo(repo_owner, repo_name, result.clone_success, repo_size=repo_size)
                 ghcc.log(f"Added {repo_owner}/{repo_name} to DB")
             if result.makefiles is not None:
-                try:
-                    db.update_makefile(repo_owner, repo_name, result.makefiles)
-                except ValueError as e:  # mismatching number of makefiles
-                    if not args.force_recompile:
-                        raise e
+                db.update_makefile(repo_owner, repo_name, result.makefiles, ignore_length_mismatch=args.force_recompile)
             if result.libraries is not None:
                 libraries.update(result.libraries)
                 if repo_count % 10 == 0:  # flush every 10 repos

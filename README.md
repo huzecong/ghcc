@@ -35,7 +35,7 @@ python -m ghcc.database clear
 ```
 
 If the code is modified, remember to rebuild the image since the `batch_make.py` script (run inside Docker to compile
-Makefiles) depends on the code.
+Makefiles) depends on the library code.
 
 ## Heuristics for Compilation
 

@@ -32,7 +32,7 @@ class Database:
     r"""An abstraction over MongoDB that stores information about repositories.
     """
     HOST = "localhost"
-    PORT = 27018
+    PORT = 27017
     AUTH_DB_NAME = "***REMOVED***"
     DB_NAME = "***REMOVED***"
     COLLECTION_NAME = "repos"
@@ -84,11 +84,12 @@ class Database:
             }
             self.collection.insert_one(record)
 
-    def update_makefile(self, repo_owner: str, repo_name: str, makefiles: List[RepoMakefileEntry]) -> None:
+    def update_makefile(self, repo_owner: str, repo_name: str, makefiles: List[RepoMakefileEntry],
+                        ignore_length_mismatch: bool = False) -> None:
         entry = self.get(repo_owner, repo_name)
         if entry is None:
             raise ValueError(f"Specified repository {repo_owner}/{repo_name} does not exist")
-        if len(entry["makefiles"]) not in [0, len(makefiles)]:
+        if not ignore_length_mismatch and len(entry["makefiles"]) not in [0, len(makefiles)]:
             raise ValueError(f"Number of makefiles stored in entry ({len(entry['makefiles'])}) does not "
                              f"match provided list ({len(makefiles)})")
         result = self.collection.update_one({"_id": entry["_id"]}, {"$set": {
