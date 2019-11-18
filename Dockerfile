@@ -345,5 +345,6 @@ ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 ENV CUSTOM_PATH="/usr/custom"
 COPY ghcc/ $CUSTOM_PATH/ghcc/
 COPY scripts/ $CUSTOM_PATH/scripts/
+RUN curl -sSL https://github.com/shyiko/commacd/raw/v1.0.0/commacd.sh -o $CUSTOM_PATH/.commacd.sh
 ENV PATH="$CUSTOM_PATH/scripts/mock_path:$PATH"
 ENV PYTHONPATH="$CUSTOM_PATH/:$PYTHONPATH"
