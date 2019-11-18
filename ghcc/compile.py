@@ -4,9 +4,8 @@ import time
 from enum import Enum, auto
 from typing import Dict, List, NamedTuple, Optional
 
-from ghcc.compile.docker import run_docker_command
 from ghcc.repo import clean
-from ghcc.utils import run_command
+from ghcc.utils import run_command, run_docker_command
 
 MOCK_PATH = os.path.abspath(os.path.join(os.path.split(__file__)[0], "..", "..", "scripts", "mock_path"))
 
@@ -110,7 +109,7 @@ def _unsafe_make(directory: str, timeout: Optional[int] = None, env: Optional[Di
     if os.path.isfile(os.path.join(directory, "configure")):
         start_time = time.time()
         run_command(["chmod", "+x", "./configure"], env=env, cwd=directory)
-        run_command(["./configure"], env=env, cwd=directory, timeout=timeout)
+        run_command(["./configure", "--disable-werror"], env=env, cwd=directory, timeout=timeout)
         end_time = time.time()
         if timeout is not None:
             timeout = max(1, timeout - int(end_time - start_time))

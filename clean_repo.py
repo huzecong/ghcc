@@ -9,7 +9,7 @@ parser.add_argument("folder", type=str)  # the folder to clean up
 args = parser.parse_args()
 
 try:
-    ghcc.run_docker_command(["rm", "-rf", "/usr/src/*"], user=0, directory_mapping={args.folder: "/usr/src"})
+    ghcc.utils.run_docker_command(["rm", "-rf", "/usr/src/*"], user=0, directory_mapping={args.folder: "/usr/src"})
 except subprocess.CalledProcessError as e:
     ghcc.log(f"Command failed with retcode {e.returncode}", "error")
     output = e.output.decode("utf-8")

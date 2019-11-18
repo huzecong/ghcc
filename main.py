@@ -127,7 +127,7 @@ def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
         # get the results file if any compilation task timeouts.
-        ret = ghcc.run_docker_command([
+        ret = ghcc.utils.run_docker_command([
             "batch_make.py",
             *(["--record-libraries"] if record_libraries else []),
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else [])],
@@ -358,7 +358,7 @@ def main():
 
     if os.path.exists(args.clone_folder):
         ghcc.log(f"Removing contents of clone folder '{args.clone_folder}'...", "warning", force_console=True)
-        ghcc.run_docker_command(["rm", "-rf", "/usr/src/*"], user=0, directory_mapping={args.clone_folder: "/usr/src"})
+        ghcc.utils.run_docker_command(["rm", "-rf", "/usr/src/*"], user=0, directory_mapping={args.clone_folder: "/usr/src"})
 
     ghcc.log("Crawling starts...", "warning", force_console=True)
     pool = ghcc.utils.Pool(processes=args.n_procs)

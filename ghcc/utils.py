@@ -1,11 +1,12 @@
 import functools
 import multiprocessing
+import os
 import subprocess
 import sys
 import tempfile
 import threading
 import types
-from typing import Any, Dict, List, NamedTuple, Optional, TextIO, Type, TypeVar, Union
+from typing import Dict, List, NamedTuple, Optional, TextIO, Tuple, Union
 
 import psutil
 import tenacity
@@ -17,13 +18,12 @@ __all__ = [
     "error_wrapper",
     "CommandResult",
     "run_command",
+    "run_docker_command",
     "get_folder_size",
     "readable_size",
     "get_file_lines",
     "register_ipython_excepthook",
     "exception_wrapper",
-    "to_dict",
-    "to_namedtuple",
 ]
 
 
@@ -124,6 +124,60 @@ def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] =
     return CommandResult(args, ret.returncode, None)
 
 
+def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None,
+                       user: Optional[Union[int, Tuple[int, int]]] = None,
+                       directory_mapping: Optional[Dict[str, str]] = None,
+                       timeout: Optional[int] = None, **kwargs) -> CommandResult:
+    r"""Run a command inside a container based on the ``gcc-custom`` Docker image.
+
+    :param command: The command to run. Should be either a `str` or a list of `str`. Note: they're treated the same way,
+        because a shell is always spawn in the entry point.
+    :param cwd: The working directory of the command to run. If None, uses the default (probably user home).
+    :param user: The user ID to use inside the Docker container. Additionally, group ID can be specified by passing
+        a tuple of two `int`\ s for this argument. If not specified, the current user and group IDs are used. As a
+        special case, pass in ``0`` to run as root.
+    :param directory_mapping: Mapping of host directories to container paths. Mapping is performed via "bind mount".
+    :param timeout: Maximum running time for the command. If running time exceeds the specified limit,
+        ``subprocess.TimeoutExpired`` is thrown.
+    :param kwargs: Additional keyword arguments to pass to :meth:`ghcc.utils.run_command`.
+    """
+    # Validate `command` argument, and append call to `bash` if `shell` is True.
+    if isinstance(command, list):
+        command = ' '.join(command)
+    command = f"'{command}'"
+
+    # Construct the `docker run` command.
+    docker_command = ["docker", "run", "--rm"]
+    for host, container in (directory_mapping or {}).items():
+        docker_command.extend(["-v", f"{os.path.abspath(host)}:{container}"])
+    if cwd is not None:
+        docker_command.extend(["-w", cwd])
+
+    # Assign user and group IDs based on `user` argument.
+    if user != 0:
+        user_id: Union[str, int] = "`id -u $USER`"
+        group_id: Union[str, int] = "`id -g $USER`"
+        if user is not None:
+            if isinstance(user, tuple):
+                user_id, group_id = user
+            else:
+                user_id = user
+        docker_command.extend(["-e", f"LOCAL_USER_ID={user_id}"])
+        docker_command.extend(["-e", f"LOCAL_GROUP_ID={group_id}"])
+
+    docker_command.append("gcc-custom")
+    if timeout is not None:
+        # Timeout is implemented by calling `timeout` inside Docker container.
+        docker_command.extend(["timeout", f"{timeout}s"])
+    docker_command.append(command)
+    ret = run_command(' '.join(docker_command), shell=True, **kwargs)
+
+    # Check whether exceeded timeout limit by inspecting return code.
+    if ret.return_code == 124:
+        raise error_wrapper(subprocess.TimeoutExpired(ret.command, timeout, output=ret.captured_output))
+    return ret
+
+
 def get_folder_size(path: str) -> int:
     r"""Get disk usage of given path in bytes.
 
@@ -198,17 +252,6 @@ def exception_wrapper(handler_fn):
         return wrapped
 
     return decorator
-
-
-def to_dict(nm_tpl: NamedTuple) -> Dict[str, Any]:
-    return {key: value for key, value in zip(nm_tpl._fields, nm_tpl)}
-
-
-NamedTupleType = TypeVar('NamedTupleType', bound=NamedTuple)
-
-
-def to_namedtuple(nm_tpl_type: Type[NamedTupleType], dic: Dict[str, Any]) -> NamedTupleType:
-    return nm_tpl_type(**dic)
 
 
 class MultiprocessingFileWriter(TextIO):
