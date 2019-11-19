@@ -103,7 +103,7 @@ class Database:
 
 if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == "clear":
-        confirm = input("This will drop the entire database. Confirm? [y/N]")
+        confirm = input("This will drop the entire database. Confirm? [y/N] ")
         if confirm.lower() in ["y", "yes"]:
             db = Database()
             db.collection.delete_many({})

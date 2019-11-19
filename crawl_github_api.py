@@ -70,7 +70,7 @@ def log_output(result: CloneResult):
     elif result.error_type is CloneErrorType.FolderExists:
         log(f"{full_name} skipped because folder exists", "warning")
     else:
-        log(f"Failed to clone {full_name}: {result.output}", "error")
+        log(f"Failed to clone {full_name}: {result.captured_output}", "error")
 
 
 def clone_repo(repo):

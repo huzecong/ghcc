@@ -27,7 +27,7 @@ class MultiprocessingFileHandler(logging.Handler):
         logging.Handler.__init__(self)
 
         self._handler = logging.FileHandler(path, mode=mode)
-        self.queue = multiprocessing.Queue(-1)
+        self.queue: 'multiprocessing.Queue[str]' = multiprocessing.Queue(-1)
 
         thrd = threading.Thread(target=self.receive)
         thrd.daemon = True

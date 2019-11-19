@@ -59,7 +59,7 @@ def _run_command_retry_logger(retry_state: tenacity.RetryCallState) -> None:
 
 
 class CommandResult(NamedTuple):
-    command: List[str]
+    command: Union[str, List[str]]
     return_code: int
     captured_output: Optional[bytes]
 
@@ -127,7 +127,7 @@ def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] =
 def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None,
                        user: Optional[Union[int, Tuple[int, int]]] = None,
                        directory_mapping: Optional[Dict[str, str]] = None,
-                       timeout: Optional[int] = None, **kwargs) -> CommandResult:
+                       timeout: Optional[float] = None, **kwargs) -> CommandResult:
     r"""Run a command inside a container based on the ``gcc-custom`` Docker image.
 
     :param command: The command to run. Should be either a `str` or a list of `str`. Note: they're treated the same way,
@@ -174,6 +174,7 @@ def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None
 
     # Check whether exceeded timeout limit by inspecting return code.
     if ret.return_code == 124:
+        assert timeout is not None
         raise error_wrapper(subprocess.TimeoutExpired(ret.command, timeout, output=ret.captured_output))
     return ret
 
@@ -186,7 +187,7 @@ def get_folder_size(path: str) -> int:
     return int(subprocess.check_output(['du', '-bs', path]).split()[0].decode('utf-8'))
 
 
-def readable_size(size: int) -> str:
+def readable_size(size: float) -> str:
     r"""Represent file size in human-readable format.
 
     :param size: File size in bytes.
@@ -262,7 +263,7 @@ class MultiprocessingFileWriter(TextIO):
 
     def __init__(self, path: str, mode: str = "a"):
         self._file = open("path")
-        self._queue = multiprocessing.Queue(-1)
+        self._queue: 'multiprocessing.Queue[str]' = multiprocessing.Queue(-1)
 
         self._thread = threading.Thread(target=self._receive)
         self._thread.daemon = True

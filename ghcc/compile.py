@@ -54,7 +54,7 @@ def _create_result(success: bool = False, elf_files: Optional[List[str]] = None,
     return CompileResult(success, elf_files=elf_files, error_type=error_type, captured_output=captured_output)
 
 
-def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None,
+def _make_skeleton(make_fn, directory: str, timeout: Optional[float] = None,
                    env: Optional[Dict[str, str]] = None) -> CompileResult:
     directory = os.path.abspath(directory)
 
@@ -100,7 +100,7 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[int] = None,
     return result
 
 
-def _unsafe_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> None:
+def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> None:
     env = {
         b"PATH": f"{MOCK_PATH}:{os.environ['PATH']}".encode('utf-8'),
         **{k.encode('utf-8'): v.encode('utf-8') for k, v in (env or {}).items()},
@@ -119,7 +119,7 @@ def _unsafe_make(directory: str, timeout: Optional[int] = None, env: Optional[Di
     run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
 
 
-def unsafe_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
+def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
     r"""Run ``make`` in the given directory and collect compilation outputs.
 
     .. warning::
@@ -137,7 +137,7 @@ def unsafe_make(directory: str, timeout: Optional[int] = None, env: Optional[Dic
     return _make_skeleton(_unsafe_make, directory, timeout, env)
 
 
-def _docker_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> None:
+def _docker_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> None:
     if os.path.isfile(os.path.join(directory, "configure")):
         # Try running `./configure` if it exists.
         run_docker_command("chmod +x configure && ./configure && make --keep-going -j1",
@@ -151,7 +151,7 @@ def _docker_make(directory: str, timeout: Optional[int] = None, env: Optional[Di
                            timeout=timeout, env=env)
 
 
-def docker_make(directory: str, timeout: Optional[int] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
+def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
     r"""Run ``make`` within Docker and collect compilation outputs.
 
     .. note::
