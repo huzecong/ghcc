@@ -36,24 +36,21 @@ def clean(repo_folder: str) -> None:
 
     :param repo_folder: Path to the Git repository.
     """
-    try:
-        run_command(["git", "reset", "--hard"], cwd=repo_folder)  # reset modified files
-    except subprocess.CalledProcessError:
-        pass  # ignore errors
-    try:
-        run_command(["git", "clean", "-xffd"], cwd=repo_folder)  # use `-f` twice to really clean everything
-    except subprocess.CalledProcessError:
-        pass  # ignore errors
-    try:
-        run_command(["git", "submodule", "foreach", "--recursive", "git", "clean", "-xffd"],  # clean all submodules
-                    cwd=repo_folder)
-    except subprocess.CalledProcessError:
-        pass  # ignore errors
+    # Reset modified files.
+    run_command(["git", "reset", "--hard"], cwd=repo_folder, ignore_errors=True)
+    # Use `-f` twice to really clean everything.
+    run_command(["git", "clean", "-xffd"], cwd=repo_folder, ignore_errors=True)
+    # Do the same thing for submodules, if submodules exist.
+    if os.path.exists(os.path.join(repo_folder, ".gitmodules")):
+        run_command(["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"],
+                    cwd=repo_folder, ignore_errors=True)
+        run_command(["git", "submodule", "foreach", "--recursive", "git", "clean", "-xffd"],
+                    cwd=repo_folder, ignore_errors=True)
 
 
-def clone(repo_owner: str, repo_name: str, clone_folder: str,
-          folder_name: Optional[str] = None, default_branch: Optional[str] = None,
-          timeout: Optional[int] = None, skip_if_exists: bool = True) -> CloneResult:
+def clone(repo_owner: str, repo_name: str, clone_folder: str, folder_name: Optional[str] = None, *,
+          default_branch: Optional[str] = None, timeout: Optional[float] = None,
+          recursive: bool = False, skip_if_exists: bool = True) -> CloneResult:
     r"""Clone a repository on GitHub, for instance, ``torvalds/linux``.
 
     :param repo_owner: Name of the repository owner, e.g., ``torvalds``.
@@ -72,6 +69,7 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str,
         1. Attempts a shallow clone on only the default branch.
         2. If error occurs, raise the error.
     :param timeout: Maximum time allowed for cloning, in seconds. Defaults to ``None`` (unlimited time).
+    :param recursive: If ``True``, passes the ``--recursive`` flag to Git, which recursively clones submodules.
     :param skip_if_exists: Whether to skip cloning if the destination folder already exists. If ``False``, the folder
         will be deleted.
 
@@ -100,23 +98,24 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str,
     env = {b"GIT_TERMINAL_PROMPT": b"0"}
 
     def try_clone():
+        git_args = ["git", "clone", "--depth=1"]
+        if recursive:
+            git_args.append("--recursive")
         # If a true git error was thrown, re-raise it and let the outer code deal with it.
         try:
             try_branch = default_branch or "master"
             # Try cloning only 'master' branch, but it's possible there's no branch named 'master'.
             run_command(
-                ["git", "clone", "--depth=1", f"--branch={try_branch}", "--single-branch", url, clone_folder],
+                [*git_args, f"--branch={try_branch}", "--single-branch", url, clone_folder],
                 env=env, timeout=timeout)
             return
         except subprocess.CalledProcessError as err:
             expected_msg = b"fatal: Remote branch master not found in upstream origin"
-            if default_branch is not None or (err.output is not None and expected_msg not in err.output):
+            if default_branch is not None or not (err.output is not None and expected_msg in err.output):
                 # If `default_branch` is specified, always re-raise the exception.
                 raise err
         # 'master' branch doesn't exist; do a shallow clone of all branches.
-        run_command(
-            ["git", "clone", "--depth=1", url, clone_folder],
-            env=env, timeout=timeout)
+        run_command([*git_args, url, clone_folder], env=env, timeout=timeout)
 
     try:
         try_clone()

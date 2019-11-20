@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+r"""A fake pkg-config implementation which records libraries resolved.
+"""
+import os
+import subprocess
+import sys
+
+
+def main():
+    # Remove the mock path from PATH to find the actual GCC.
+    cur_path = os.path.abspath(os.path.split(__file__)[0])
+    all_paths = [os.path.abspath(path) for path in os.environ["PATH"].split(":")]
+    env = {b"PATH": ':'.join(path for path in all_paths if path != cur_path).encode('utf-8')}
+
+    # Gather library names that the program is linked to. Note that this is only called if exception occurs, or
+    # pkg-config fails. This gets rid of libraries that are installed.
+    def write_libraries():
+        log_path = os.environ.get("MOCK_GCC_LIBRARY_LOG", "").strip()
+        if len(log_path) > 0:
+            libs = [arg for arg in sys.argv[1:] if arg[0] != "-"]
+            if len(libs) > 0:
+                with open(log_path, "a") as f:
+                    f.write('\n'.join(libs) + '\n')
+
+    command = ["pkg-config"] + sys.argv[1:]
+    try:
+        # Redirecting to a pipe could prevent GCC producing colored output.
+        process = subprocess.Popen(command, stdout=sys.stdout, stderr=sys.stderr, env=env)
+        process.wait()
+        if process.returncode != 0:
+            write_libraries()
+            sys.stderr.write(f"Mock pkg-config return code: {process.returncode}, command: {' '.join(command)}\n")
+            exit(process.returncode)
+    except Exception as e:
+        write_libraries()
+        sys.stderr.write(f"Mock pkg-config command: {' '.join(command)}, exception: {e}\n")
+        exit(2)
+
+
+if __name__ == "__main__":
+    main()

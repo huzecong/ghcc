@@ -1,3 +1,4 @@
+import argparse
 import functools
 import multiprocessing
 import os
@@ -95,13 +96,15 @@ def error_wrapper(err: Exception) -> Exception:
                 stop=tenacity.stop_after_attempt(6),  # retry 5 times
                 wait=tenacity.wait_random_exponential(multiplier=2, max=60),
                 before_sleep=_run_command_retry_logger)
-def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
-                timeout: Optional[int] = None, return_output: bool = False, **kwargs) -> CommandResult:
+def run_command(args: Union[str, List[str]], *,
+                env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
+                timeout: Optional[float] = None, return_output: bool = False, ignore_errors: bool = False,
+                **kwargs) -> CommandResult:
     r"""A wrapper over ``subprocess.check_output`` that prevents deadlock caused by the combination of pipes and
-    timeout. Output is redirected into a temporary file and returned only on exceptions.
+    timeout. Output is redirected into a temporary file and returned only on exceptions or when return code is nonzero.
 
     In case an OSError occurs, the function will retry for a maximum for 5 times with exponential backoff. If error
-    still occurs, we just throw it up.
+    still occurs, we just re-raise it.
 
     :param args: The command to run. Should be either a `str` or a list of `str` depending on whether ``shell`` is True.
     :param env: Environment variables to set before running the command. Defaults to None.
@@ -109,6 +112,8 @@ def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] =
     :param timeout: Maximum running time for the command. If running time exceeds the specified limit,
         ``subprocess.TimeoutExpired`` is thrown.
     :param return_output: If ``True``, the captured output is returned. Otherwise, the return code is returned.
+    :param ignore_errors: If ``True``, exceptions will not be raised. A special return code of -32768 indicates a
+        ``subprocess.TimeoutExpired`` error.
     """
     with tempfile.TemporaryFile() as f:
         try:
@@ -116,8 +121,13 @@ def run_command(args: Union[str, List[str]], env: Optional[Dict[bytes, bytes]] =
                                  timeout=timeout, env=env, cwd=cwd, **kwargs)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             f.seek(0)
-            e.output = f.read()
-            raise error_wrapper(e) from None
+            output = f.read()
+            if ignore_errors:
+                return_code = e.returncode if isinstance(e, subprocess.CalledProcessError) else -32768
+                return CommandResult(args, return_code, output)
+            else:
+                e.output = output
+                raise error_wrapper(e) from None
         if return_output or ret.returncode != 0:
             f.seek(0)
             return CommandResult(args, ret.returncode, f.read())
@@ -286,3 +296,12 @@ class MultiprocessingFileWriter(TextIO):
                 self._file.write(record)
             except EOFError:
                 break
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def add_toggle_argument(self, name: str, default: bool = False) -> None:
+        if not name.startswith("--"):
+            raise ValueError("Toggle arguments must begin with '--'")
+        var_name = name.replace('-', '_')
+        self.add_argument(f"--{name}", action="store_const", default=default, dest=var_name, const=True)
+        self.add_argument(f"--no-{name}", action="store_const", dest=var_name, const=False)

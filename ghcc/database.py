@@ -14,6 +14,8 @@ __all__ = [
 ]
 
 
+# TODO: Distinguish between failed compilations & makefiles with no yield
+
 class RepoMakefileEntry(TypedDict):
     directory: str  # directory containing the Makefile
     successful: bool  # whether compilation was successful (return code 0)

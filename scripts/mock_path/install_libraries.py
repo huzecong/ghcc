@@ -70,7 +70,15 @@ int main() {
             ret = ghcc.utils.run_command(["apt-cache", "--quiet", "search", name], timeout=10, return_output=True)
             packages = [line.split()[0] for line in ret.captured_output.decode('utf-8').split('\n') if line]
             if len(packages) > 0:
-                package = packages[0]
+                # Find the most matching package name. This is done in a simple way: search the package name using the
+                # regex, and count the number of characters outside the match. The fewer characters there are, the more
+                # accurate the match.
+                regex = re.compile(name)
+                packages_rank = []
+                for p in packages:
+                    match = regex.search(p)
+                    packages_rank.append((len(p) - (match.end() - match.start()), p))
+                package = min(packages_rank)[1]
                 print(f"Trying {package} for {lib}")
                 ret = ghcc.utils.run_command(["apt-get", "install", "--dry-run", package], return_output=True)
                 match = re.search(r"(\d+) newly installed", ret.captured_output.decode('utf-8'))
@@ -82,10 +90,12 @@ int main() {
                 try:
                     # Do not use a timeout, otherwise DPKG will break.
                     ret = ghcc.utils.run_command(["apt-get", "install", "-y", "--no-install-recommends", package])
-                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                except subprocess.CalledProcessError as e:
                     ghcc.log(f"Exception occurred when installing '{package}' for '{lib}': {e}", "error")
                     continue
                 if ret.return_code != 0 or not check_installed(lib):
+                    # Not the package we want, uninstall it.
+                    ghcc.utils.run_command(["apt-get", "remove", "-y", package])
                     continue
 
                 packages_to_install.append(package)

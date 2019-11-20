@@ -124,15 +124,21 @@ def set_log_file(path: str, fmt: str = "%(asctime)s %(levelname)s: %(message)s")
     logger.addHandler(handler)
 
 
-def log(msg: str, level: str = "info", force_console: bool = False) -> None:
+def log(msg: str, level: str = "info", force_console: bool = False, include_proc_id: bool = True) -> None:
     r"""Write a line of log with the specified logging level.
 
     :param msg: Message to log.
     :param level: Logging level. Available options are ``success``, ``warning``, ``error``, and ``info``.
     :param force_console: If ``True``, will write to console regardless of logging level setting.
+    :param include_proc_id: If ``True``, will include the process ID for multiprocessing pool workers.
     """
     if level not in LOGGING_MAP:
         raise ValueError(f"Incorrect logging level '{level}'")
+    if include_proc_id:
+        proc_name = multiprocessing.current_process().name
+        if proc_name.startswith("PoolWorker"):
+            worker_id = proc_name[(proc_name.find('-') + 1):]
+            msg = f"(Worker {worker_id:2d}) {msg}"
     if force_console or LEVEL_MAP[level] >= _CONSOLE_LOGGING_LEVEL.get():
         time_str = time.strftime("[%Y-%m-%d %H:%M:%S]")
         print(colored(time_str, COLOR_MAP[level]), msg, flush=True)

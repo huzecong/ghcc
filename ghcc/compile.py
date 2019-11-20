@@ -28,6 +28,7 @@ def find_makefiles(path: str) -> List[str]:
     """
     directories = []
     for subdir, dirs, files in os.walk(path):
+        # if any(name.lower() in ["makefile", "makefile.am"] for name in files):
         if any(name.lower() == "makefile" for name in files):
             directories.append(subdir)
     return directories
@@ -109,14 +110,28 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
     if os.path.isfile(os.path.join(directory, "configure")):
         start_time = time.time()
         run_command(["chmod", "+x", "./configure"], env=env, cwd=directory)
-        run_command(["./configure", "--disable-werror"], env=env, cwd=directory, timeout=timeout)
+        ret = run_command(
+            ["./configure", "--disable-werror"], env=env, cwd=directory, timeout=timeout, ignore_errors=True)
         end_time = time.time()
+        if ret.return_code != 0 and end_time - start_time <= 2:
+            # The configure file might not support `--disable-werror` and died instantly. Try again without the flag.
+            run_command(["./configure"], env=env, cwd=directory, timeout=timeout)
+            end_time = time.time()
         if timeout is not None:
             timeout = max(1, timeout - int(end_time - start_time))
 
     # Make while ignoring errors.
     # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
     run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
+    # try:
+    #     run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
+    #     return
+    # except subprocess.CalledProcessError as err:
+    #     expected_msg = b"Missing separator"
+    #     if not (err.output is not None and expected_msg in err.output):
+    #         raise err
+    # # Try again using BSD Make instead of GNU Make. Note BSD Make does not have a flag equivalent to `-B/--always-make`.
+    # run_command(["bmake", "-k", "-j1"], env=env, cwd=directory, timeout=timeout)
 
 
 def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:

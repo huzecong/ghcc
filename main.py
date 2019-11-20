@@ -6,7 +6,6 @@ r"""Run the cloning--compilation pipeline. What happens is:
 4. Compilation products are cleaned and the repository is archived to save space.
 """
 
-import argparse
 import functools
 import hashlib
 import os
@@ -23,24 +22,29 @@ from ghcc import CloneErrorType
 
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    parser = ghcc.utils.ArgumentParser()
     parser.add_argument("--repo-list-file", type=str, default="../c-repos.csv")
     parser.add_argument("--clone-folder", type=str,
                         default="repos/")  # where cloned repositories are stored (temporarily)
     parser.add_argument("--binary-folder", type=str, default="binaries/")  # where compiled binaries are stored
     parser.add_argument("--archive-folder", type=str, default="archives/")  # where archived repositories are stored
-    parser.add_argument("--n-procs", type=int, default=32)  # 0 for single-threaded execution
+    parser.add_argument("--n-procs", type=int, default=0)  # 0 for single-threaded execution
     parser.add_argument("--log-file", type=str, default="log.txt")
     parser.add_argument("--clone-timeout", type=int, default=600)  # wait up to 10 minutes
+    parser.add_toggle_argument("--force-reclone", default=False)  # if not, use archives when possible
     parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
-    parser.add_argument("--force-recompile", action="store_true", default=False)
-    parser.add_argument("--docker-batch-compile", action="store_true", default=False)
+    parser.add_toggle_argument("--force-recompile", default=False)
+    parser.add_toggle_argument("--docker-batch-compile", default=True)
     parser.add_argument("--compression-type", choices=["gzip", "xz"], default="gzip")
     parser.add_argument("--max-archive-size", type=int,
                         default=100 * 1024 * 1024)  # only archive repos no larger than 100MB.
     parser.add_argument("--record-libraries", type=str,
                         default=None)  # gather libraries used in Makefiles and print to the specified file
-    parser.add_argument("--logging-level", choices=["info", "warning", "error", "quiet"], default="info")
+    parser.add_argument("--logging-level", choices=list(ghcc.logging.LEVEL_MAP.keys()), default="info")
+    parser.add_argument("--max-repos", type=int,
+                        default=-1)  # maximum number of repositories to process (ignoring non-existent)
+    parser.add_toggle_argument("--recursive-clone", default=True)  # if True, use `--recursive` when `git clone`
+    # parser.add_argument("--automake", action="store_true", default=False)  # if True, support automake
     args = parser.parse_args()
     return args
 
@@ -174,8 +178,9 @@ def exception_handler(e, *args, **kwargs):
 
 @ghcc.utils.exception_wrapper(exception_handler)
 def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str, archive_folder: str,
-                      clone_timeout: Optional[int] = None, compile_timeout: Optional[int] = None,
-                      force_recompile: bool = False, docker_batch_compile: bool = True,
+                      recursive_clone: bool = True,
+                      clone_timeout: Optional[float] = None, compile_timeout: Optional[float] = None,
+                      force_reclone: bool = False, force_recompile: bool = False, docker_batch_compile: bool = True,
                       max_archive_size: Optional[int] = None, compression_type: str = "gzip",
                       record_libraries: bool = False) -> PipelineResult:
     r"""Perform the entire pipeline.
@@ -189,8 +194,12 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         be ``binary_folder/repo_owner/repo_name``, e.g., ``binary_folder/torvalds/linux``.
     :param archive_folder: Path to the folder where archived repositories will be stored. The actual archive file will
         be ``archive_folder/repo_owner/repo_name.tar.xz``, e.g., ``archive_folder/torvalds/linux.tar.xz``.
+
+    :param recursive_clone: If ``True``, uses ``--recursive`` when cloning.
     :param clone_timeout: Timeout for cloning, or `None` (default) for unlimited time.
     :param compile_timeout: Timeout for compilation, or `None` (default) for unlimited time.
+    :param force_reclone: If ``True``, always clone a fresh copy for compilation. If ``False``, only clone when there
+        are no matching archives.
     :param force_recompile: If ``True``, the repository is compiled regardless of the value in DB.
     :param docker_batch_compile: If ``True``, compile all Makefiles within a repository in a single Docker container.
     :param max_archive_size: If specified, only archive repositories whose size is not larger than the given
@@ -198,6 +207,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     :param compression_type: The file type of the archive to produce. Valid values are ``"gzip"`` (faster) and
         ``"xz"`` (smaller).
     :param record_libraries: If ``True``, record the libraries used in compilation.
+
     :return: An entry to insert into the DB, or `None` if no operations are required.
     """
     repo_full_name = f"{repo_info.repo_owner}/{repo_info.repo_name}"
@@ -205,10 +215,10 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     repo_path = os.path.join(clone_folder, repo_folder_name)
     if compression_type == "xz":
         archive_path = os.path.join(archive_folder, f"{repo_full_name}.tar.xz")
-        compress_command = ["tar", "cJf", archive_path, repo_path]
+        tar_type_flag = "J"
     elif compression_type == "gzip":
         archive_path = os.path.join(archive_folder, f"{repo_full_name}.tar.gz")
-        compress_command = ["tar", "czf", archive_path, repo_path]
+        tar_type_flag = "z"
     else:
         raise ValueError(f"Invalid compression type '{compression_type}'")
 
@@ -217,13 +227,22 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
     clone_success = None
 
     # Stage 1: Cloning from GitHub.
-    if (repo_entry is None or  # not processed
-            (repo_entry["clone_successful"] and  # not compiled
-             (not repo_entry["compiled"] or force_recompile) and not os.path.exists(repo_path))):
-        # TODO: Try extracting archive if it exists.
+    if not force_reclone and os.path.exists(archive_path):
+        # Extract the archive instead of cloning.
+        try:
+            ghcc.utils.run_command(["tar", f"x{tar_type_flag}f", archive_path, repo_path])
+            ghcc.log(f"{repo_full_name} extracted from archive", "success")
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+            ghcc.log(f"Unknown error when extracting {repo_full_name}. Captured output: '{e.output}'", "error")
+            shutil.rmtree(repo_path)
+            return PipelineResult(repo_info.repo_owner, repo_info.repo_name)
+        repo_size = ghcc.utils.get_folder_size(repo_path)
+    elif (repo_entry is None or  # not processed
+          (repo_entry["clone_successful"] and  # not compiled
+           (not repo_entry["compiled"] or force_recompile) and not os.path.exists(repo_path))):
         clone_result = ghcc.clone(
             repo_info.repo_owner, repo_info.repo_name, clone_folder=clone_folder, folder_name=repo_folder_name,
-            timeout=clone_timeout, skip_if_exists=False)
+            timeout=clone_timeout, skip_if_exists=False, recursive=recursive_clone)
         clone_success = clone_result.success
         if not clone_result.success:
             if clone_result.error_type is CloneErrorType.FolderExists:
@@ -314,7 +333,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
             os.makedirs(os.path.split(archive_path)[0], exist_ok=True)
             compress_success = False
             try:
-                ghcc.utils.run_command(compress_command, timeout=clone_timeout)
+                ghcc.utils.run_command(["tar", f"c{tar_type_flag}f", archive_path, repo_path], timeout=clone_timeout)
                 compress_success = True
             except subprocess.TimeoutExpired:
                 ghcc.log(f"Compression timeout for {repo_full_name}, giving up", "error")
@@ -376,11 +395,14 @@ def main():
         pipeline_fn = functools.partial(
             clone_and_compile,
             clone_folder=args.clone_folder, binary_folder=args.binary_folder, archive_folder=args.archive_folder,
+            recursive_clone=args.recursive_clone,
             clone_timeout=args.clone_timeout, compile_timeout=args.compile_timeout,
-            force_recompile=args.force_recompile, docker_batch_compile=args.docker_batch_compile,
+            force_reclone=args.force_reclone, force_recompile=args.force_recompile,
+            docker_batch_compile=args.docker_batch_compile,
             max_archive_size=args.max_archive_size, compression_type=args.compression_type,
             record_libraries=(args.record_libraries is not None))
         repo_count = 0
+        cloned_count = 0
         # for result in map(pipeline_fn, iterator):
         for result in pool.imap_unordered(pipeline_fn, iterator):
             repo_count += 1
@@ -390,6 +412,8 @@ def main():
                 continue
             result: PipelineResult
             repo_owner, repo_name = result.repo_owner, result.repo_name
+            if result.clone_success or result.makefiles:
+                cloned_count += 1
             if result.clone_success is not None:
                 repo_size = result.repo_size or -1  # a value of zero is probably also wrong
                 db.add_repo(repo_owner, repo_name, result.clone_success, repo_size=repo_size)
@@ -401,6 +425,8 @@ def main():
                 if repo_count % 10 == 0:  # flush every 10 repos
                     with open(args.record_libraries, "w") as f:
                         f.write("\n".join(libraries))
+            if cloned_count >= args.max_repos > 0:
+                break
 
     except KeyboardInterrupt:
         print("Press Ctrl-C again to force terminate...")
@@ -409,6 +435,7 @@ def main():
         pool.close()
         pool.terminate()
     finally:
+        ghcc.log("Gracefully shutting down...", "warning", force_console=True)
         if args.record_libraries is not None:
             with open(args.record_libraries, "w") as f:
                 f.write("\n".join(libraries))

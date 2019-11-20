@@ -15,20 +15,26 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-o')
     parser.add_argument('-c', action='store_true')
+    # Override the optimization level with -O0.
     parser.add_argument('-O', nargs='?')
-    parser.add_argument('-Wall', action='store_true')
+    # Record the libraries used.
     parser.add_argument('-l', action='append')
+    # Disable settings to platform-specific code; we only target our platform.
     parser.add_argument('-mabi')  # ignored
     parser.add_argument('-march')  # ignored
     parser.add_argument('-mtune')  # ignored
-    # Link time optimization would cause `-g` to be ignored on older versions of GCC
+    # Swallow flags that are unnecessary for us.
+    parser.add_argument('-Wall', action='store_true')
+    parser.add_argument('-Werror', action='store_true')
+    parser.add_argument('-Wextra', action='store_true')
+    # Link time optimization would cause `-g` to be ignored on older versions of GCC.
     parser.add_argument('-flto', action='store_true')  # ignored
     parser.add_argument('-mlittle-endian', action='store_true')  # ignored
     parser.add_argument('-mapcs', action='store_true')  # ignored
     parser.add_argument('-mno-sched-prolog', action='store_true')  # ignored
     args, unknown_args = parser.parse_known_args(sys.argv[1:])
 
-    # Remove the mock path from PATH to find the actual GCC
+    # Remove the mock path from PATH to find the actual GCC.
     cur_path = os.path.abspath(os.path.split(__file__)[0])
     all_paths = [os.path.abspath(path) for path in os.environ["PATH"].split(":")]
     env = {b"PATH": ':'.join(path for path in all_paths if path != cur_path).encode('utf-8')}
