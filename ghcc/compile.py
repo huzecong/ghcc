@@ -1,9 +1,13 @@
+import hashlib
 import os
+import shutil
 import subprocess
 import time
 from enum import Enum, auto
 from typing import Dict, List, NamedTuple, Optional
 
+import ghcc
+from ghcc.database import RepoMakefileEntry
 from ghcc.repo import clean
 from ghcc.utils import run_command, run_docker_command
 
@@ -17,6 +21,7 @@ __all__ = [
     "CompileResult",
     "unsafe_make",
     "docker_make",
+    "compile_and_move",
 ]
 
 
@@ -118,7 +123,7 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
             run_command(["./configure"], env=env, cwd=directory, timeout=timeout)
             end_time = time.time()
         if timeout is not None:
-            timeout = max(1, timeout - int(end_time - start_time))
+            timeout = max(1.0, timeout - int(end_time - start_time))
 
     # Make while ignoring errors.
     # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
@@ -181,3 +186,53 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
         - If compilation failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
     """
     return _make_skeleton(_docker_make, directory, timeout, env)
+
+
+def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[str],
+                     compile_timeout: Optional[float] = None, record_libraries: bool = False,
+                     compile_fn=docker_make) -> List[RepoMakefileEntry]:
+    r"""Compile all Makefiles as provided, and move generated binaries to the binary directory.
+
+    :param repo_binary_dir: Path to the directory where generated binaries for the repository will be stored.
+    :param repo_path: Path to the repository.
+    :param makefile_dirs: A list of all subdirectories containing Makefiles.
+    :param compile_timeout: Maximum time allowed for compilation of all Makefiles, in seconds. Defaults to ``None``
+        (unlimited time).
+    :param record_libraries: If ``True``, A file named ``libraries.txt`` will be generated under
+        :attr:`repo_binary_dir`, recording the libraries used in compilation. Defaults to ``False``.
+    :param compile_fn: The method to call for compilation. Possible values are :meth:`ghcc.unsafe_make` and
+        :meth:`ghcc.docker_make` (default).
+    :return: A list of Makefile compilation results.
+    """
+    env = None
+    if record_libraries:
+        env = {"MOCK_GCC_LIBRARY_LOG": os.path.join(repo_binary_dir, "libraries.txt")}
+    makefiles: List[RepoMakefileEntry] = []
+    remaining_time = compile_timeout
+    for make_dir in makefile_dirs:
+        if remaining_time is not None and remaining_time <= 0.0:
+            break
+        start_time = time.time()
+        compile_result = compile_fn(make_dir, timeout=remaining_time, env=env)
+        elapsed_time = time.time() - start_time
+        if remaining_time is not None:
+            remaining_time -= elapsed_time
+        if len(compile_result.elf_files) > 0:
+            # Failed compilations may also yield binaries.
+            sha256: List[str] = []
+            for path in compile_result.elf_files:
+                os.path.join(make_dir, path)
+                hash_obj = hashlib.sha256()
+                with open(path, "rb") as f:
+                    hash_obj.update(f.read())
+                digest = hash_obj.hexdigest()
+                sha256.append(digest)
+                shutil.move(path, os.path.join(repo_binary_dir, digest))
+            makefiles.append({
+                "directory": make_dir,
+                "success": compile_result.success,
+                "binaries": compile_result.elf_files,
+                "sha256": sha256,
+            })
+    ghcc.clean(repo_path)
+    return makefiles

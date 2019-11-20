@@ -266,7 +266,7 @@ def exception_wrapper(handler_fn):
 
 
 class MultiprocessingFileWriter(TextIO):
-    """A multiprocessing file writer that allows multiple processes to write to the same file. Order is not guaranteed.
+    r"""A multiprocessing file writer that allows multiple processes to write to the same file. Order is not guaranteed.
 
     This is very similar to :class:`~ghcc.logging.MultiprocessingFileHandler`.
     """
@@ -299,9 +299,15 @@ class MultiprocessingFileWriter(TextIO):
 
 
 class ArgumentParser(argparse.ArgumentParser):
+    r"""A wrapper over :class:`ArgumentParser` that adds support for "toggle" arguments. A toggle argument with name
+    ``"flag"`` has value ``True`` if the argument ``--flag`` exists, and ``False`` if ``--no-flag`` exists.
+
+    """
+
     def add_toggle_argument(self, name: str, default: bool = False) -> None:
         if not name.startswith("--"):
             raise ValueError("Toggle arguments must begin with '--'")
+        name = name[2:]
         var_name = name.replace('-', '_')
         self.add_argument(f"--{name}", action="store_const", default=default, dest=var_name, const=True)
         self.add_argument(f"--no-{name}", action="store_const", dest=var_name, const=False)

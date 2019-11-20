@@ -7,18 +7,15 @@ r"""Run the cloning--compilation pipeline. What happens is:
 """
 
 import functools
-import hashlib
 import os
+import pickle
 import shutil
 import subprocess
-import time
 import traceback
 from typing import Iterator, List, NamedTuple, Optional
 
-from mypy_extensions import TypedDict
-
 import ghcc
-from ghcc import CloneErrorType
+from ghcc import CloneErrorType, RepoMakefileEntry
 
 
 def parse_args():
@@ -50,21 +47,10 @@ def parse_args():
 
 
 class RepoInfo(NamedTuple):
-    index: int
+    idx: int  # `tuple` has an `index` method
     repo_owner: str
     repo_name: str
     db_result: Optional[ghcc.RepoEntry]
-
-
-class MakefileInfo(TypedDict):
-    directory: str
-    binaries: List[str]
-    sha256: List[str]
-
-
-class RepoCompileResult(NamedTuple):
-    num_succeeded: int
-    makefiles: List[MakefileInfo]
 
 
 class PipelineResult(NamedTuple):
@@ -72,7 +58,7 @@ class PipelineResult(NamedTuple):
     repo_name: str
     clone_success: Optional[bool] = None
     repo_size: Optional[int] = None
-    makefiles: Optional[List[MakefileInfo]] = None
+    makefiles: Optional[List[RepoMakefileEntry]] = None
     libraries: Optional[List[str]] = None
 
 
@@ -90,45 +76,8 @@ def contains_in_file(file_path: str, text: str) -> bool:
     return text in line
 
 
-def _compile_one_by_one(repo_binary_dir: str, repo_path: str, makefile_dirs: List[str],
-                        compile_timeout: Optional[float], record_libraries: bool = False) -> RepoCompileResult:
-    env = None
-    if record_libraries:
-        env = {"MOCK_GCC_LIBRARY_LOG": os.path.join(repo_binary_dir, "libraries.txt")}
-    num_succeeded = 0
-    makefiles: List[MakefileInfo] = []
-    remaining_time = compile_timeout
-    for make_dir in makefile_dirs:
-        if remaining_time is not None and remaining_time <= 0.0:
-            break
-        start_time = time.time()
-        compile_result = ghcc.docker_make(make_dir, timeout=remaining_time, env=env)
-        elapsed_time = time.time() - start_time
-        if remaining_time is not None:
-            remaining_time -= elapsed_time
-        if compile_result.success:
-            num_succeeded += 1
-        if len(compile_result.elf_files) > 0:
-            # Failed compilations may also yield binaries.
-            sha256: List[str] = []
-            for path in compile_result.elf_files:
-                hash_obj = hashlib.sha256()
-                with open(path, "rb") as f:
-                    hash_obj.update(f.read())
-                digest = hash_obj.hexdigest()
-                sha256.append(digest)
-                shutil.move(path, os.path.join(repo_binary_dir, digest))
-            makefiles.append({
-                "directory": make_dir,
-                "binaries": compile_result.elf_files,
-                "sha256": sha256,
-            })
-    ghcc.clean(repo_path)
-    return RepoCompileResult(num_succeeded, makefiles)
-
-
 def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
-                          compile_timeout: Optional[float], record_libraries: bool = False) -> RepoCompileResult:
+                          compile_timeout: Optional[float], record_libraries: bool = False) -> List[RepoMakefileEntry]:
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
         # get the results file if any compilation task timeouts.
@@ -141,29 +90,10 @@ def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         raise e
 
-    with open(os.path.join(repo_binary_dir, "log.txt")) as f:
-        lines = [line.strip() for line in f if line]
-    os.remove(os.path.join(repo_binary_dir, "log.txt"))
-    num_succeeded = int(lines[0])
-    num_makefiles = int(lines[1])
-    makefiles: List[MakefileInfo] = []
-    p = 2
-    for _ in range(num_makefiles):
-        pos = lines[p].find(' ')
-        n_binaries, directory = int(lines[p][:pos]), lines[p][(pos + 1):]
-        sha256, binaries = [], []
-        for line in lines[(p + 1):(p + n_binaries + 1)]:
-            pos = line.find(' ')
-            sha, path = line[:pos], line[(pos + 1):]
-            sha256.append(sha)
-            binaries.append(path)
-        makefiles.append({
-            "directory": directory,
-            "binaries": binaries,
-            "sha256": sha256,
-        })
-
-    return RepoCompileResult(num_succeeded, makefiles)
+    with open(os.path.join(repo_binary_dir, "log.pkl"), "rb") as f:
+        makefiles: List[RepoMakefileEntry] = pickle.load(f)
+    os.remove(os.path.join(repo_binary_dir, "log.pkl"))
+    return makefiles
 
 
 def exception_handler(e, *args, **kwargs):
@@ -255,7 +185,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                 else:  # CloneErrorType.Timeout
                     msg = f"Time expired ({clone_timeout}s) when attempting to clone {repo_full_name}"
                 if clone_result.captured_output is not None:
-                    msg += f". Captured output: '{clone_result.captured_output}'"
+                    msg += f". Captured output: '{clone_result.captured_output!r}'"
                 ghcc.log(msg, "error")
 
                 if clone_result.error_type is CloneErrorType.Unknown:
@@ -304,12 +234,12 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ghcc.log(f"Starting compilation for {repo_full_name}...")
 
         if docker_batch_compile:
-            compile_result = _docker_batch_compile(
-                repo_info.index, repo_binary_dir, repo_path, compile_timeout, record_libraries)
+            makefiles = _docker_batch_compile(
+                repo_info.idx, repo_binary_dir, repo_path, compile_timeout, record_libraries)
         else:
-            compile_result = _compile_one_by_one(
+            makefiles = ghcc.compile_and_move(
                 repo_binary_dir, repo_path, makefile_dirs, compile_timeout, record_libraries)
-        makefiles = compile_result.makefiles
+        num_succeeded = sum(makefile["success"] for makefile in makefiles)
         if record_libraries:
             library_log_path = os.path.join(repo_binary_dir, "libraries.txt")
             if os.path.exists(library_log_path):
@@ -319,9 +249,9 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                 libraries = []
         num_binaries = sum(len(makefile["binaries"]) for makefile in makefiles)
 
-        msg = f"{compile_result.num_succeeded} ({len(makefiles)}) out of {len(makefile_dirs)} Makefile(s) " \
+        msg = f"{num_succeeded} ({len(makefiles)}) out of {len(makefile_dirs)} Makefile(s) " \
               f"in {repo_full_name} compiled (partially), yielding {num_binaries} binaries"
-        ghcc.log(msg, "success" if compile_result.num_succeeded == len(makefile_dirs) else "warning")
+        ghcc.log(msg, "success" if num_succeeded == len(makefile_dirs) else "warning")
 
         # Stage 4: Clean and zip repo.
         if max_archive_size is not None and repo_size > max_archive_size:
