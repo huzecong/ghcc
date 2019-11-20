@@ -7,6 +7,8 @@ import sys
 import tempfile
 import threading
 import types
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, TextIO, Tuple, Union
 
 import psutil
@@ -79,7 +81,7 @@ def error_wrapper(err: Exception) -> Exception:
             except UnicodeEncodeError:  # ignore output
                 string += "\nFailed to parse output."
             else:
-                string += "\nCaptured output:\n" + '\n'.join([f'\t{line}' for line in output.split('\n')])
+                string += "\nCaptured output:\n" + '\n'.join([f'    {line}' for line in output.split('\n')])
         else:
             string += "\nNo output was generated."
         return string
@@ -311,3 +313,25 @@ class ArgumentParser(argparse.ArgumentParser):
         var_name = name.replace('-', '_')
         self.add_argument(f"--{name}", action="store_const", default=default, dest=var_name, const=True)
         self.add_argument(f"--no-{name}", action="store_const", dest=var_name, const=False)
+
+
+def verify_docker_image() -> bool:
+    r"""Checks whether the Docker image is up-to-date. This is done by verifying the modification dates for all library
+    files are earlier than the Docker image build date."""
+    image_creation_time_string = run_command(["docker", "image", "ls", "gcc-custom", "--format", "{{.CreatedAt}}"],
+                                             return_output=True).captured_output.decode("utf-8").strip()
+    image_creation_timestamp = datetime.strptime(image_creation_time_string, "%Y-%m-%d %H:%M:%S %z %Z").timestamp()
+
+    repo_root: Path = Path(__file__).parent.parent
+    paths_to_check = ["ghcc", "scripts", ".dockerignore", "Dockerfile"]
+    max_timestamp = 0.0
+    for repo_path in paths_to_check:
+        path = repo_root / repo_path
+        if path.is_file():
+            max_timestamp = max(max_timestamp, os.path.getmtime(path))
+        else:
+            for subdir, dirs, files in os.walk(path):
+                if subdir.endswith("__pycache__"):
+                    continue
+                max_timestamp = max(max_timestamp, max(os.path.getmtime(os.path.join(subdir, f)) for f in files))
+    return max_timestamp <= image_creation_timestamp

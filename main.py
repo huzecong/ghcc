@@ -299,6 +299,11 @@ def iter_repos(db: ghcc.Database, repo_list_path: str) -> Iterator[RepoInfo]:
 
 
 def main():
+    if not ghcc.utils.verify_docker_image():
+        ghcc.log("ERROR: Your Docker image is out-of-date. Please rebuild the image by: `docker build -t gcc-custom .`",
+                 "error", force_console=True)
+        exit(1)
+
     args = parse_args()
     print(args)
     if args.n_procs == 0:
