@@ -1,6 +1,8 @@
 # Created by .ignore support plugin (hsz.mobi)
 ### Example user template
 
+database-config.json
+
 # IntelliJ project files
 .idea
 *.iml

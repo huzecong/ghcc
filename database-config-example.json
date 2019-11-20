@@ -1,0 +1,9 @@
+{
+  "host": "localhost",
+  "port": 27017,
+  "auth_db_name": "***REMOVED***",
+  "db_name": "my_db",
+  "collection_name": "repos",
+  "username": "username",
+  "password": "password"
+}
