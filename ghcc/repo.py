@@ -5,7 +5,7 @@ import time
 from enum import Enum, auto
 from typing import NamedTuple, Optional
 
-from ghcc.utils import run_command
+from ghcc.utils.run import run_command
 
 __all__ = [
     "CloneErrorType",

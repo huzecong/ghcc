@@ -12,7 +12,7 @@ import pickle
 import shutil
 import subprocess
 import traceback
-from typing import Iterator, List, NamedTuple, Optional
+from typing import Iterator, List, NamedTuple, Optional, Set, Dict, Callable
 
 from mypy_extensions import TypedDict
 
@@ -224,7 +224,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 
     makefiles = None
     libraries = None
-    meta_info = None
+    meta_info: Optional[PipelineMetaInfo] = None
     if not repo_entry or not repo_entry["compiled"] or force_recompile:
         # # SPECIAL CHECK: Do not attempt to compile OS kernels!
         # kernel_name = None
@@ -275,7 +275,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ghcc.log(msg, "success" if num_succeeded == len(makefile_dirs) else "warning")
 
         if record_metainfo:
-            meta_info: PipelineMetaInfo = {
+            meta_info = {
                 "num_makefiles": len(makefile_dirs),
                 "has_gitmodules": os.path.exists(os.path.join(repo_path, ".gitmodules")),
             }
@@ -341,13 +341,13 @@ class MetaInfo:
         self.missing_makefiles = 0
 
     def add_repo(self, result: PipelineResult) -> None:
-        assert result.meta_info is not None
         self.num_repos += 1
-        self.num_gitmodules += result.meta_info["has_gitmodules"]
-        self.num_makefiles += result.meta_info["num_makefiles"]
+        if result.meta_info is not None:
+            self.num_gitmodules += result.meta_info["has_gitmodules"]
+            self.num_makefiles += result.meta_info["num_makefiles"]
 
-        new_makefiles = {}
-        old_makefiles = {}
+        new_makefiles: Dict[str, bool] = {}
+        old_makefiles: Dict[str, bool] = {}
         if result.makefiles is not None:
             new_makefiles = {makefile["directory"]: makefile["success"]
                              for makefile in result.makefiles}
@@ -375,7 +375,7 @@ class MetaInfo:
         return msg
 
 
-def main():
+def main() -> None:
     if not ghcc.utils.verify_docker_image():
         ghcc.log("ERROR: Your Docker image is out-of-date. Please rebuild the image by: `docker build -t gcc-custom .`",
                  "error", force_console=True)
@@ -397,14 +397,14 @@ def main():
     ghcc.log("Crawling starts...", "warning", force_console=True)
     pool = ghcc.utils.Pool(processes=args.n_procs)
     db = ghcc.Database()
-    libraries = set()
+    libraries: Set[str] = set()
     if args.record_libraries is not None and os.path.exists(args.record_libraries):
         with open(args.record_libraries, "r") as f:
             libraries = set(f.read().split())
 
     try:
         iterator = iter_repos(db, args.repo_list_file, args.max_repos if args.max_repos != -1 else None)
-        pipeline_fn = functools.partial(
+        pipeline_fn: Callable[[RepoInfo], Optional[PipelineMetaInfo]] = functools.partial(
             clone_and_compile,
             clone_folder=args.clone_folder, binary_folder=args.binary_folder, archive_folder=args.archive_folder,
             recursive_clone=args.recursive_clone,
@@ -421,7 +421,6 @@ def main():
                 ghcc.log(f"Processed {repo_count} repositories", force_console=True)
             if result is None:
                 continue
-            result: PipelineResult
             repo_owner, repo_name = result.repo_info.repo_owner, result.repo_info.repo_name
             if args.write_db:
                 if result.clone_success is not None or result.repo_info.db_result is None:
@@ -436,6 +435,7 @@ def main():
             if result.libraries is not None:
                 libraries.update(result.libraries)
                 if repo_count % 10 == 0:  # flush every 10 repos
+                    assert args.record_libraries is not None
                     with open(args.record_libraries, "w") as f:
                         f.write("\n".join(libraries))
 

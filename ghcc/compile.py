@@ -9,7 +9,8 @@ from typing import Dict, List, NamedTuple, Optional
 import ghcc
 from ghcc.database import RepoMakefileEntry
 from ghcc.repo import clean
-from ghcc.utils import run_command, run_docker_command
+from ghcc.utils.docker import run_docker_command
+from ghcc.utils.run import run_command
 
 MOCK_PATH = os.path.abspath(os.path.join(os.path.split(__file__)[0], "..", "..", "scripts", "mock_path"))
 
