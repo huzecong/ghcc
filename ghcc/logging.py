@@ -6,8 +6,10 @@ import time
 import traceback
 
 from termcolor import colored
+from typing import List
 
 __all__ = [
+    "get_levels",
     "set_log_file",
     "log",
     "set_logging_level",
@@ -110,6 +112,10 @@ LEVEL_MAP = {
 }
 manager = multiprocessing.Manager()
 _CONSOLE_LOGGING_LEVEL = manager.Value('i', LEVEL_MAP["info"])
+
+
+def get_levels() -> List[str]:
+    return list(LEVEL_MAP.keys())
 
 
 def set_log_file(path: str, fmt: str = "%(asctime)s %(levelname)s: %(message)s") -> None:

@@ -12,42 +12,35 @@ import pickle
 import shutil
 import subprocess
 import traceback
-from typing import Iterator, List, NamedTuple, Optional, Set, Dict, Callable
+from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Set
 
 from mypy_extensions import TypedDict
 
 import ghcc
 from ghcc import CloneErrorType, RepoMakefileEntry
+from ghcc.arguments import Choices, Switch
 
 
-def parse_args():
-    parser = ghcc.utils.ArgumentParser()
-    parser.add_argument("--repo-list-file", type=str, default="../c-repos.csv")
-    parser.add_argument("--clone-folder", type=str,
-                        default="repos/")  # where cloned repositories are stored (temporarily)
-    parser.add_argument("--binary-folder", type=str, default="binaries/")  # where compiled binaries are stored
-    parser.add_argument("--archive-folder", type=str, default="archives/")  # where archived repositories are stored
-    parser.add_argument("--n-procs", type=int, default=0)  # 0 for single-threaded execution
-    parser.add_argument("--log-file", type=str, default="log.txt")
-    parser.add_argument("--clone-timeout", type=int, default=600)  # wait up to 10 minutes
-    parser.add_toggle_argument("--force-reclone", default=False)  # if not, use archives when possible
-    parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
-    parser.add_toggle_argument("--force-recompile", default=False)
-    parser.add_toggle_argument("--docker-batch-compile", default=True)
-    parser.add_argument("--compression-type", choices=["gzip", "xz"], default="gzip")
-    parser.add_argument("--max-archive-size", type=int,
-                        default=100 * 1024 * 1024)  # only archive repos no larger than 100MB.
-    parser.add_argument("--record-libraries", type=str,
-                        default=None)  # gather libraries used in Makefiles and print to the specified file
-    parser.add_argument("--logging-level", choices=list(ghcc.logging.LEVEL_MAP.keys()), default="info")
-    parser.add_argument("--max-repos", type=int,
-                        default=-1)  # maximum number of repositories to process (ignoring non-existent)
-    parser.add_toggle_argument("--recursive-clone", default=True)  # if True, use `--recursive` when `git clone`
-    parser.add_toggle_argument("--write-db", default=True)  # only modify the DB when True
-    parser.add_toggle_argument("--record-metainfo", default=False)  # if True, record a bunch of other stuff
-    # parser.add_argument("--automake", action="store_true", default=False)  # if True, support automake
-    args = parser.parse_args()
-    return args
+class Arguments(ghcc.arguments.Arguments):
+    repo_list_file: str = "../c-repos.csv"
+    clone_folder: str = "repos/"  # where cloned repositories are stored (temporarily)
+    binary_folder: str = "binaries/"  # where compiled binaries are stored
+    archive_folder: str = "archives/"  # where archived repositories are stored
+    n_procs: int = 0  # 0 for single-threaded execution
+    log_file: str = "log.txt"
+    clone_timeout: int = 600  # wait up to 10 minutes
+    force_reclone: Switch = False  # if not, use archives when possible
+    compile_timeout: int = 900  # wait up to 15 minutes
+    force_recompile: Switch = False
+    docker_batch_compile: Switch = True
+    compression_type: Choices["gzip", "xz"] = "gzip"
+    max_archive_size: int = 100 * 1024 * 1024  # only archive repos no larger than 100MB.
+    record_libraries: Optional[str] = None  # gather libraries used in Makefiles and print to the specified file
+    logging_level: Choices[ghcc.logging.get_levels()] = "info"
+    max_repos: int = -1  # maximum number of repositories to process (ignoring non-existent)
+    recursive_clone: Switch = True  # if True, use `--recursive` when `git clone`
+    write_db: Switch = True  # only modify the DB when True
+    record_metainfo: Switch = False  # if True, record a bunch of other stuff
 
 
 class RepoInfo(NamedTuple):
@@ -381,7 +374,7 @@ def main() -> None:
                  "error", force_console=True)
         exit(1)
 
-    args = parse_args()
+    args = Arguments()
     print(args)
     if args.n_procs == 0:
         # Only do this on the single-threaded case.
