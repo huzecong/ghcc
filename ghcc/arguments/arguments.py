@@ -1,7 +1,7 @@
 import argparse
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional
 
-from ghcc.arguments.custom_types import NoneType, Switch, is_choices
+from ghcc.arguments.custom_types import Switch, is_choices, is_optional, unwrap_optional
 
 __all__ = [
     "ArgumentParser",
@@ -88,12 +88,10 @@ class Arguments:
         for arg_name, arg_typ in annotations.items():
             has_default = hasattr(cls, arg_name)
             default_val = getattr(cls, arg_name, None)
-            nullable = False
-            # hacky check of whether `arg_typ` is `Optional`: `Optional` is `Union` with `type(None)`
-            if getattr(arg_typ, '__origin__', None) is Union and NoneType in arg_typ.__args__:  # type: ignore
-                nullable = True
+            nullable = is_optional(arg_typ)
+            if nullable:
                 # extract the type wrapped inside `Optional`
-                arg_typ = next(t for t in arg_typ.__args__ if not isinstance(t, NoneType))  # type: ignore
+                arg_typ = unwrap_optional(arg_typ)
 
             required = False
             if nullable and not has_default:

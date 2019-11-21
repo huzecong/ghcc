@@ -1,5 +1,17 @@
 import enum
-from typing import Any, Iterable, Union
+from typing import Any, Iterable, Union, TypeVar, Optional, Type
+
+__all__ = [
+    "Choices",
+    "Enum",
+    "Switch",
+    "is_choices",
+    "is_optional",
+    "unwrap_optional",
+]
+
+NoneType = type(None)
+T = TypeVar('T')
 
 
 class _Choices:
@@ -21,16 +33,6 @@ class _Choices:
 Choices: Any = _Choices()
 
 
-def is_choices(typ) -> bool:
-    r"""Check whether a type is a choices type. This cannot be checked using traditional methods,
-    since :class:`Choices` is a metaclass.
-    """
-    return type(typ) is type(Choices)
-
-
-NoneType = type(None)
-
-
 class Enum(enum.Enum):
     def _generate_next_value_(name, start, count, last_values):
         return name.lower()
@@ -40,3 +42,20 @@ class Enum(enum.Enum):
 
 
 Switch = Union[bool]
+
+
+def is_choices(typ: type) -> bool:
+    r"""Check whether a type is a choices type. This cannot be checked using traditional methods,
+    since :class:`Choices` is a metaclass.
+    """
+    return isinstance(typ, _Choices)
+
+
+def is_optional(typ: type) -> bool:
+    r"""Check whether a type is `Optional`. `Optional` is internally implemented as `Union` with `type(None)`."""
+    return getattr(typ, '__origin__', None) is Union and NoneType in typ.__args__  # type: ignore
+
+
+def unwrap_optional(typ: Type[Optional[T]]) -> Type[T]:
+    r"""Return the inner type inside an `Optional` type."""
+    return next(t for t in typ.__args__ if not isinstance(t, NoneType))  # type: ignore
