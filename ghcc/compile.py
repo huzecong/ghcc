@@ -217,11 +217,12 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
         elapsed_time = time.time() - start_time
         if remaining_time is not None:
             remaining_time -= elapsed_time
-        if len(compile_result.elf_files) > 0:
-            # Failed compilations may also yield binaries.
+        # Only record Makefiles that either successfully compiled or yielded binaries.
+        # Successful compilations might not generate binaries, while failed compilations may also yield binaries.
+        if len(compile_result.elf_files) > 0 or compile_result.success:
             sha256: List[str] = []
             for path in compile_result.elf_files:
-                os.path.join(make_dir, path)
+                path = os.path.join(make_dir, path)
                 hash_obj = hashlib.sha256()
                 with open(path, "rb") as f:
                     hash_obj.update(f.read())

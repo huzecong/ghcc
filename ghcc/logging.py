@@ -137,7 +137,7 @@ def log(msg: str, level: str = "info", force_console: bool = False, include_proc
     if include_proc_id:
         proc_name = multiprocessing.current_process().name
         if "PoolWorker" in proc_name:
-            worker_id = proc_name[(proc_name.find('-') + 1):]
+            worker_id = int(proc_name[(proc_name.find('-') + 1):])
             msg = f"(Worker {worker_id:2d}) {msg}"
     if force_console or LEVEL_MAP[level] >= _CONSOLE_LOGGING_LEVEL.get():
         time_str = time.strftime("[%Y-%m-%d %H:%M:%S]")

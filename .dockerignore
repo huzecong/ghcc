@@ -1,4 +1,5 @@
-*repos/
-*archives/
-*binaries/
-*log.txt
+*/
+!ghcc/
+!scripts/
+!*.py
+!requirements.txt
