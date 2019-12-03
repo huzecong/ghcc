@@ -97,20 +97,39 @@ class Database:
             self.collection.insert_one(record)
 
     def update_makefile(self, repo_owner: str, repo_name: str, makefiles: List[RepoMakefileEntry],
-                        ignore_length_mismatch: bool = False) -> None:
+                        ignore_length_mismatch: bool = False) -> bool:
+        r"""Update Makefile compilation results for a given repository.
+
+        :param repo_owner: Owner of the repository.
+        :param repo_name: Name of the repository.
+        :param makefiles: List of Makefile compilation results.
+        :param ignore_length_mismatch: If ``False``, a :exc:`ValueError` is raised if the number of Makefiles previously
+            stored in the DB is different from the length of :attr:`makefiles` (unless there were no Makefiles
+            previously).
+        :return: A boolean value, indicating whether the write succeeded. Note that it is considered unsuccessful if
+            the :attr:`makefiles` list was not stored due to Unicode encoding errors.
+        """
         entry = self.get(repo_owner, repo_name)
         if entry is None:
             raise ValueError(f"Specified repository {repo_owner}/{repo_name} does not exist")
         if not ignore_length_mismatch and len(entry["makefiles"]) not in [0, len(makefiles)]:
             raise ValueError(f"Number of makefiles stored in entry ({len(entry['makefiles'])}) does not "
                              f"match provided list ({len(makefiles)})")
-        result = self.collection.update_one({"_id": entry["_id"]}, {"$set": {
+        update_entries = {
             "compiled": True,
             "num_makefiles": len(makefiles),
             "num_binaries": sum(len(makefile["binaries"]) for makefile in makefiles),
             "makefiles": makefiles,
-        }})
-        assert result.matched_count == 1
+        }
+        try:
+            result = self.collection.update_one({"_id": entry["_id"]}, {"$set": update_entries})
+            assert result.matched_count == 1
+            return True
+        except UnicodeEncodeError as e:
+            update_entries["makefiles"] = []  # some path might contain strange characters; just don't store it
+            result = self.collection.update_one({"_id": entry["_id"]}, {"$set": update_entries})
+            assert result.matched_count == 1
+            return False
 
     def _aggregate_sum(self, field_name: str) -> int:
         cursor = self.collection.aggregate(
@@ -139,4 +158,5 @@ if __name__ == '__main__':
         print("Interact with the database using `db`, e.g.:\n"
               "> db.count_makefiles()\n")
         from IPython import embed
+
         embed()

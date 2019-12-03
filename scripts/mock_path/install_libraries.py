@@ -10,6 +10,7 @@ import ghcc
 parser = argparse.ArgumentParser()
 parser.add_argument("file", type=str)  # path to libraries log file
 parser.add_argument("--skip-to", type=str, default=None)  # name of library to skip to
+parser.add_argument("--skip-after", type=str, default=None)  # name of library to skip to
 args = parser.parse_args()
 
 
@@ -20,6 +21,15 @@ def skip_until(elem, iterator):
             flag = True
         if flag:
             yield x
+
+
+def skip_after(elem, iterator):
+    flag = False
+    for x in iterator:
+        if flag:
+            yield x
+        if x == elem:
+            flag = True
 
 
 def main():
@@ -49,6 +59,8 @@ int main() {
 
     if args.skip_to is not None:
         libraries = skip_until(args.skip_to, libraries)
+    elif args.skip_after is not None:
+        libraries = skip_after(args.skip_after, libraries)
     for lib in libraries:
         # Check if library is installed -- whether linking succeeds.
         if check_installed(lib):
@@ -60,7 +72,7 @@ int main() {
         # 2. Search for the package with `apt search`.
         # 3. Install the package.
         # 4. Retry compilation to see if it succeeds.
-        libname = lib.replace("_", "[-_]")
+        libname = lib.replace("_", "[-_]").replace("+", r"\+")
         names = [f"lib{libname}-dev",
                  f"lib{libname}(-?[0-9.]+)?-dev",
                  f"lib{libname}(-?[0-9.]+)?",
@@ -77,9 +89,12 @@ int main() {
                 packages_rank = []
                 for p in packages:
                     match = regex.search(p)
-                    packages_rank.append((len(p) - (match.end() - match.start()), p))
+                    if match is not None:
+                        packages_rank.append((len(p) - (match.end() - match.start()), p))
+                if len(packages_rank) == 0:
+                    continue
                 package = min(packages_rank)[1]
-                print(f"Trying {package} for {lib}")
+                print(f"Trying {package} for {lib}", flush=True)
                 ret = ghcc.utils.run_command(["apt-get", "install", "--dry-run", package], return_output=True)
                 match = re.search(r"(\d+) newly installed", ret.captured_output.decode('utf-8'))
                 if match.group(1):
@@ -94,8 +109,7 @@ int main() {
                     ghcc.log(f"Exception occurred when installing '{package}' for '{lib}': {e}", "error")
                     continue
                 if ret.return_code != 0 or not check_installed(lib):
-                    # Not the package we want, uninstall it.
-                    ghcc.utils.run_command(["apt-get", "remove", "-y", package])
+                    # Although it's not the package we want, do not try to uninstall as it may result in other errors.
                     continue
 
                 packages_to_install.append(package)

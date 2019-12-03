@@ -1,5 +1,6 @@
 import argparse
-from typing import Any, Callable, Dict, List, Optional
+import functools
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 from ghcc.arguments.custom_types import Switch, is_choices, is_optional, unwrap_optional
 
@@ -23,12 +24,28 @@ class ArgumentParser(argparse.ArgumentParser):
         self.add_argument(f"--no-{name}", action="store_false", dest=var_name)
 
 
+T = TypeVar('T')
+ConversionFn = Callable[[str], T]
+
+
 def _bool_conversion_fn(s: str) -> bool:
     if s.lower() in ["y", "yes", "true", "ok"]:
         return True
     if s.lower() in ["n", "no", "false"]:
         return False
     raise ValueError(f"Invalid value '{s}' for bool argument")
+
+
+def _optional_wrapper_fn(fn: Optional[ConversionFn[T]] = None) -> ConversionFn[Optional[T]]:
+    @functools.wraps(fn)
+    def wrapped(s: str) -> Optional[T]:
+        if s.lower() == 'none':
+            return None
+        if fn is None:
+            return s
+        return fn(s)
+
+    return wrapped
 
 
 class Arguments:
@@ -44,7 +61,7 @@ class Arguments:
             activation: Choices['relu', 'tanh', 'sigmoid'] = 'relu'
             logging_level: Choices[ghcc.logging.get_levels()] = 'info'
             use_dropout: Switch = True
-            dropout_prob: float = 0.5
+            dropout_prob: Optional[float] = 0.5
 
         args = Arguments()
 
@@ -61,9 +78,27 @@ class Arguments:
         parser.add_argument("--logging-level", choices=ghcc.logging.get_levels(), default="info")
         parser.add_argument("--use-dropout", action="store_true", dest="use_dropout", default=True)
         parser.add_argument("--no-use-dropout", action="store_false", dest="use_dropout")
-        parser.add_argument("--dropout-prob", type=float, default=0.5)
+        parser.add_argument("--dropout-prob", type=lambda s: None if s.lower() == 'none' else float(s), default=0.5)
 
         args = parser.parse_args()
+
+    Suppose the following arguments are provided:
+
+    .. code-block:: bash
+
+        python main.py \
+            --model-name LSTM \
+            --activation sigmoid \
+            --logging-level debug \
+            --no-use-dropout \
+            --dropout-prob none
+
+    the parsed arguments will be:
+
+    .. code-block:: bash
+
+        Namespace(model_name="LSTM", hidden_size=512, activation="sigmoid", logging_level="debug",
+                  use_dropout=False, dropout_prob=None)
 
     :class:`Arguments` provides the following features:
 
@@ -114,8 +149,13 @@ class Arguments:
                     parser_kwargs["default"] = default_val
                 parser.add_argument(parser_arg_name, **parser_kwargs)
             else:
+                conversion_fn = None
                 if arg_typ in cls._TYPE_CONVERSION_FN or callable(arg_typ):
-                    parser_kwargs["type"] = cls._TYPE_CONVERSION_FN.get(arg_typ, arg_typ)
+                    conversion_fn = cls._TYPE_CONVERSION_FN.get(arg_typ, arg_typ)
+                if nullable:
+                    conversion_fn = _optional_wrapper_fn(conversion_fn)
+                if conversion_fn is not None:
+                    parser_kwargs["type"] = conversion_fn
                 if has_default:
                     parser_kwargs["default"] = default_val
                 parser.add_argument(parser_arg_name, **parser_kwargs)

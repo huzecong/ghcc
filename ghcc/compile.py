@@ -17,6 +17,7 @@ MOCK_PATH = os.path.abspath(os.path.join(os.path.split(__file__)[0], "..", "..",
 ELF_FILE_TAG = b"ELF"  # Linux
 
 __all__ = [
+    "contains_files",
     "find_makefiles",
     "CompileErrorType",
     "CompileResult",
@@ -24,6 +25,20 @@ __all__ = [
     "docker_make",
     "compile_and_move",
 ]
+
+
+def contains_files(path: str, names: List[str]) -> bool:
+    r"""Check (non-recursively) whether the directory contains at least one file with an acceptable name
+    (case-insensitive).
+
+    :param path: The directory to check for.
+    :param names: List of acceptable names. Note that all names must be in lowercase!
+    :return: Whether the check succeeded.
+    """
+    for file in os.listdir(path):
+        if file.lower() in names and os.path.isfile(os.path.join(path, file)):
+            return True
+    return False
 
 
 def find_makefiles(path: str) -> List[str]:
@@ -34,8 +49,9 @@ def find_makefiles(path: str) -> List[str]:
     """
     directories = []
     for subdir, dirs, files in os.walk(path):
-        # if any(name.lower() in ["makefile", "makefile.am"] for name in files):
-        if any(name.lower() == "makefile" for name in files):
+        # if any(name.lower() == "makefile" for name in files):
+        # if contains_files(subdir, ["makefile", "configure.ac", "configure.in"]):
+        if contains_files(subdir, ["makefile"]):
             directories.append(subdir)
     return directories
 
@@ -112,6 +128,20 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
         b"PATH": f"{MOCK_PATH}:{os.environ['PATH']}".encode('utf-8'),
         **{k.encode('utf-8'): v.encode('utf-8') for k, v in (env or {}).items()},
     }
+    # Try GNU Automake first. Note that errors are ignored because it's possible that the original files still work.
+    if contains_files(directory, ["configure.ac", "configure.in"]):
+        start_time = time.time()
+        if os.path.isfile(os.path.join(directory, "autogen.sh")):
+            # Some projects with non-trivial build instructions provide an "autogen.sh" script.
+            run_command(["chmod", "+x", "./autogen.sh"], env=env, cwd=directory)
+            run_command(["./autogen.sh"], env=env, cwd=directory, timeout=timeout, ignore_errors=True)
+        else:
+            run_command(["autoreconf", "--force", "--install"],
+                        env=env, cwd=directory, timeout=timeout, ignore_errors=True)
+        end_time = time.time()
+        if timeout is not None:
+            timeout = max(1.0, timeout - int(end_time - start_time))
+
     # Try running `./configure` if it exists.
     if os.path.isfile(os.path.join(directory, "configure")):
         start_time = time.time()
@@ -128,16 +158,15 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
 
     # Make while ignoring errors.
     # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
-    run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
-    # try:
-    #     run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
-    #     return
-    # except subprocess.CalledProcessError as err:
-    #     expected_msg = b"Missing separator"
-    #     if not (err.output is not None and expected_msg in err.output):
-    #         raise err
-    # # Try again using BSD Make instead of GNU Make. Note BSD Make does not have a flag equivalent to `-B/--always-make`.
-    # run_command(["bmake", "-k", "-j1"], env=env, cwd=directory, timeout=timeout)
+    try:
+        run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
+        return
+    except subprocess.CalledProcessError as err:
+        expected_msg = b"Missing separator"
+        if not (err.output is not None and expected_msg in err.output):
+            raise err
+    # Try again using BSD Make instead of GNU Make. Note BSD Make does not have a flag equivalent to `-B/--always-make`.
+    run_command(["bmake", "-k", "-j1"], env=env, cwd=directory, timeout=timeout)
 
 
 def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:

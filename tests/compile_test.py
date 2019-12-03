@@ -71,15 +71,14 @@ class CompileTest(unittest.TestCase):
         binary_dir = os.path.join(self.tempdir.name, "_bin")
         os.makedirs(binary_dir)
         result = _docker_batch_compile(0, binary_dir, self.directory, 20, record_libraries=True)
-        assert result.num_succeeded == 1
-        assert len(result.makefiles) == 1
-        assert set(self.target_elfs) == set(result.makefiles[0]["binaries"])
+        assert len(result) == 1
+        assert set(self.target_elfs) == set(result[0]["binaries"])
 
-        elf_paths = [os.path.join(binary_dir, file) for file in result.makefiles[0]["sha256"]]
+        elf_paths = [os.path.join(binary_dir, file) for file in result[0]["sha256"]]
         self._test_debug_info(elf_paths)
 
     def test_gcc_library_log(self):
-        from ghcc.compile.compile import MOCK_PATH
+        from ghcc.compile import MOCK_PATH
         library_log_path = os.path.join(self.tempdir.name, "libraries.txt")
         env = {
             b"PATH": f"{MOCK_PATH}:{os.environ['PATH']}".encode('utf-8'),

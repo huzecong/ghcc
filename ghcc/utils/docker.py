@@ -74,7 +74,7 @@ def verify_docker_image() -> bool:
                                              return_output=True).captured_output.decode("utf-8").strip()
     image_creation_timestamp = datetime.strptime(image_creation_time_string, "%Y-%m-%d %H:%M:%S %z %Z").timestamp()
 
-    repo_root: Path = Path(__file__).parent.parent
+    repo_root: Path = Path(__file__).parent.parent.parent
     paths_to_check = ["ghcc", "scripts", ".dockerignore", "Dockerfile"]
     max_timestamp = 0.0
     for repo_path in paths_to_check:

@@ -28,17 +28,17 @@ class Arguments(ghcc.arguments.Arguments):
     archive_folder: str = "archives/"  # where archived repositories are stored
     n_procs: int = 0  # 0 for single-threaded execution
     log_file: str = "log.txt"
-    clone_timeout: int = 600  # wait up to 10 minutes
+    clone_timeout: Optional[int] = 600  # wait up to 10 minutes
     force_reclone: Switch = False  # if not, use archives when possible
-    compile_timeout: int = 900  # wait up to 15 minutes
+    compile_timeout: Optional[int] = 900  # wait up to 15 minutes
     force_recompile: Switch = False
     docker_batch_compile: Switch = True
     compression_type: Choices["gzip", "xz"] = "gzip"
     max_archive_size: int = 100 * 1024 * 1024  # only archive repos no larger than 100MB.
     record_libraries: Optional[str] = None  # gather libraries used in Makefiles and print to the specified file
     logging_level: Choices[ghcc.logging.get_levels()] = "info"
-    max_repos: int = -1  # maximum number of repositories to process (ignoring non-existent)
-    recursive_clone: Switch = True  # if True, use `--recursive` when `git clone`
+    max_repos: Optional[int] = None  # maximum number of repositories to process (ignoring non-existent)
+    recursive_clone: Switch = False  # if True, use `--recursive` when `git clone`
     write_db: Switch = True  # only modify the DB when True
     record_metainfo: Switch = False  # if True, record a bunch of other stuff
 
@@ -54,6 +54,7 @@ class PipelineMetaInfo(TypedDict):
     r"""Meta-info that might be required for experimentations."""
     num_makefiles: int  # total number of Makefiles
     has_gitmodules: bool  # whether repo contains a .gitmodules file
+    makefiles_using_automake: int  # how many Makefiles uses `automake`
 
 
 class PipelineResult(NamedTuple):
@@ -207,6 +208,12 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 
             return PipelineResult(repo_info, clone_success=clone_success)
 
+        elif clone_result.error_type is CloneErrorType.SubmodulesFailed:
+            msg = f"Submodules in {repo_full_name} ignored due to error"
+            if clone_result.captured_output is not None:
+                msg += f". Captured output: '{clone_result.captured_output!r}'"
+            ghcc.log(msg, "warning")
+
         repo_size = ghcc.utils.get_folder_size(repo_path)
         ghcc.log(f"{repo_full_name} successfully cloned ({clone_result.time:.2f}s, "
                  f"{ghcc.utils.readable_size(repo_size)})", "success")
@@ -271,6 +278,8 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
             meta_info = {
                 "num_makefiles": len(makefile_dirs),
                 "has_gitmodules": os.path.exists(os.path.join(repo_path, ".gitmodules")),
+                "makefiles_using_automake": sum(
+                    ghcc.contains_files(directory, ["configure.ac", "configure.in"]) for directory in makefile_dirs)
             }
 
         # Stage 4: Clean and zip repo.
@@ -330,41 +339,52 @@ class MetaInfo:
         self.fail_to_success = 0
         self.success_to_fail = 0
         self.success_makefiles = 0
-        self.added_makefiles = 0
-        self.missing_makefiles = 0
+        self.makefiles_with_yield = 0
+        self.added_makefiles = 0  # how many new success Makefiles are not in old
+        self.missing_makefiles = 0  # how many old success Makefiles are not in new
+        self.makefiles_using_automake = 0
 
     def add_repo(self, result: PipelineResult) -> None:
         self.num_repos += 1
         if result.meta_info is not None:
             self.num_gitmodules += result.meta_info["has_gitmodules"]
             self.num_makefiles += result.meta_info["num_makefiles"]
+            self.makefiles_using_automake += result.meta_info["makefiles_using_automake"]
 
-        new_makefiles: Dict[str, bool] = {}
-        old_makefiles: Dict[str, bool] = {}
+        # new_makefiles: Dict[str, bool] = {}
+        # old_makefiles: Dict[str, bool] = {}
         if result.makefiles is not None:
             new_makefiles = {makefile["directory"]: makefile["success"]
                              for makefile in result.makefiles}
             self.success_makefiles += sum(new_makefiles.values())
-        if result.repo_info.db_result is not None:
-            old_makefiles = {makefile["directory"]: makefile["success"]
-                             for makefile in result.repo_info.db_result["makefiles"]}
-        new_makefile_set = set(new_makefiles.keys())
-        old_makefile_set = set(old_makefiles.keys())
-        self.added_makefiles += len(new_makefile_set.difference(old_makefile_set))
-        self.missing_makefiles += len(old_makefile_set.difference(new_makefile_set))
-        for name in new_makefile_set.intersection(old_makefile_set):
-            new_status = new_makefiles[name]
-            old_status = old_makefiles[name]
-            if new_status and not old_status:
-                self.fail_to_success += 1
-            elif old_status and not new_status:
-                self.success_to_fail += 1
+            self.num_binaries += sum(len(makefile["binaries"]) for makefile in result.makefiles)
+        elif result.repo_info.db_result is not None:
+            db_result = result.repo_info.db_result
+            self.success_makefiles += sum(makefile["success"] for makefile in db_result["makefiles"])
+            self.num_binaries += sum(len(makefile["binaries"]) for makefile in db_result["makefiles"])
+
+        # if result.repo_info.db_result is not None:
+        #     old_makefiles = {makefile["directory"]: makefile["success"]
+        #                      for makefile in result.repo_info.db_result["makefiles"]}
+        # new_makefile_set = set(new_makefiles.keys())
+        # old_makefile_set = set(old_makefiles.keys())
+        # # Only count success Makefiles here.
+        # self.added_makefiles += sum(new_makefiles[m] for m in new_makefile_set.difference(old_makefile_set))
+        # self.missing_makefiles += sum(old_makefiles[m] for m in old_makefile_set.difference(new_makefile_set))
+        # for name in new_makefile_set.intersection(old_makefile_set):
+        #     new_status = new_makefiles[name]
+        #     old_status = old_makefiles[name]
+        #     if new_status and not old_status:
+        #         self.fail_to_success += 1
+        #     elif old_status and not new_status:
+        #         self.success_to_fail += 1
 
     def __repr__(self) -> str:
-        msg = f"#Repos: {self.num_repos} ({self.num_gitmodules} with .gitmodules), #Binaries: {self.num_binaries}" \
-              f"#Makefiles: {self.num_makefiles} ({self.success_makefiles} succeeded)\n" \
-              f" ├─ New: {self.added_makefiles}, Missing: {self.missing_makefiles}\n" \
-              f" └─ Fail->Success: {self.fail_to_success}, Success->Fail: {self.success_to_fail}"
+        msg = f"#Repos: {self.num_repos} ({self.num_gitmodules} with .gitmodules), #Binaries: {self.num_binaries}\n" \
+              f"#Makefiles: {self.num_makefiles} ({self.success_makefiles} succeeded, " \
+              f"{self.makefiles_using_automake} using automake)"
+        # f" ├─ New: {self.added_makefiles}, Missing: {self.missing_makefiles}\n" \
+        # f" └─ Fail->Success: {self.fail_to_success}, Success->Fail: {self.success_to_fail}"
         return msg
 
 
@@ -375,12 +395,12 @@ def main() -> None:
         exit(1)
 
     args = Arguments()
-    print(args)
     if args.n_procs == 0:
         # Only do this on the single-threaded case.
         ghcc.utils.register_ipython_excepthook()
     ghcc.set_log_file(args.log_file)
     ghcc.set_logging_level(args.logging_level, console=True, file=False)
+    ghcc.log(repr(args), force_console=True)
 
     if os.path.exists(args.clone_folder):
         ghcc.log(f"Removing contents of clone folder '{args.clone_folder}'...", "warning", force_console=True)
@@ -396,7 +416,7 @@ def main() -> None:
             libraries = set(f.read().split())
 
     try:
-        iterator = iter_repos(db, args.repo_list_file, args.max_repos if args.max_repos != -1 else None)
+        iterator = iter_repos(db, args.repo_list_file, args.max_repos)
         pipeline_fn: Callable[[RepoInfo], Optional[PipelineMetaInfo]] = functools.partial(
             clone_and_compile,
             clone_folder=args.clone_folder, binary_folder=args.binary_folder, archive_folder=args.archive_folder,
@@ -423,8 +443,11 @@ def main() -> None:
                     db.add_repo(repo_owner, repo_name, result.clone_success or True, repo_size=repo_size)
                     ghcc.log(f"Added {repo_owner}/{repo_name} to DB")
                 if result.makefiles is not None:
-                    db.update_makefile(repo_owner, repo_name, result.makefiles,
-                                       ignore_length_mismatch=args.force_recompile)
+                    update_result = db.update_makefile(repo_owner, repo_name, result.makefiles,
+                                                       ignore_length_mismatch=args.force_recompile)
+                    if not update_result:
+                        ghcc.log(f"Makefiles of {repo_owner}/{repo_name} not saved to DB due to Unicode encoding "
+                                 f"errors", "error")
             if result.libraries is not None:
                 libraries.update(result.libraries)
                 if repo_count % 10 == 0:  # flush every 10 repos
@@ -436,6 +459,8 @@ def main() -> None:
                 meta_info.add_repo(result)
                 if repo_count % 100 == 0:
                     ghcc.log(repr(meta_info), force_console=True)
+
+        ghcc.log(repr(meta_info), force_console=True)
 
     except KeyboardInterrupt:
         print("Press Ctrl-C again to force terminate...")
