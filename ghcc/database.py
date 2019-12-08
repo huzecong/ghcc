@@ -83,7 +83,8 @@ class Database:
         :param repo_size: Size (in bytes) of the cloned repository, or ``-1`` (default) if cloning failed.
         :return: The internal ID of the inserted entry.
         """
-        if self.get(repo_owner, repo_name) is None:
+        record = self.get(repo_owner, repo_name)
+        if record is None:
             record = {
                 "repo_owner": repo_owner,
                 "repo_name": repo_name,
@@ -95,6 +96,11 @@ class Database:
                 "makefiles": [],
             }
             self.collection.insert_one(record)
+        else:
+            self.collection.update_one({"_id": record["_id"]}, {"$set": {
+                "clone_successful": clone_successful,
+                "repo_size": repo_size,
+            }})
 
     def update_makefile(self, repo_owner: str, repo_name: str, makefiles: List[RepoMakefileEntry],
                         ignore_length_mismatch: bool = False) -> bool:

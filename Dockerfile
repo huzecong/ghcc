@@ -380,15 +380,18 @@ RUN apt-get install -y --no-install-recommends \
     tcl-dev \
     vstream-client-dev
 
+# Download convenience scripts.
+ENV CUSTOM_PATH="/usr/custom"
+RUN mkdir -p $CUSTOM_PATH
+RUN curl -sSL https://github.com/shyiko/commacd/raw/v1.0.0/commacd.sh -o $CUSTOM_PATH/.commacd.sh
+
 # Create entrypoint that sets appropriate group and user IDs.
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # Copy `ghcc` files into image, and set PYTHONPATH and PATH.
-ENV CUSTOM_PATH="/usr/custom"
 COPY ghcc/ $CUSTOM_PATH/ghcc/
 COPY scripts/ $CUSTOM_PATH/scripts/
-RUN curl -sSL https://github.com/shyiko/commacd/raw/v1.0.0/commacd.sh -o $CUSTOM_PATH/.commacd.sh
 ENV PATH="$CUSTOM_PATH/scripts/mock_path:$PATH"
 ENV PYTHONPATH="$CUSTOM_PATH/:$PYTHONPATH"

@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import time
 from enum import Enum, auto
-from typing import Dict, List, NamedTuple, Optional
+from typing import Dict, Iterator, List, NamedTuple, Optional
 
 import ghcc
 from ghcc.database import RepoMakefileEntry
@@ -160,13 +160,14 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
     # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
     try:
         run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
-        return
     except subprocess.CalledProcessError as err:
-        expected_msg = b"Missing separator"
+        expected_msg = b"missing separator"
         if not (err.output is not None and expected_msg in err.output):
             raise err
-    # Try again using BSD Make instead of GNU Make. Note BSD Make does not have a flag equivalent to `-B/--always-make`.
-    run_command(["bmake", "-k", "-j1"], env=env, cwd=directory, timeout=timeout)
+        else:
+            # Try again using BSD Make instead of GNU Make. Note BSD Make does not have a flag equivalent to
+            # `-B/--always-make`.
+            run_command(["bmake", "-k", "-j1"], env=env, cwd=directory, timeout=timeout)
 
 
 def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
@@ -220,7 +221,7 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
 
 def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[str],
                      compile_timeout: Optional[float] = None, record_libraries: bool = False,
-                     compile_fn=docker_make) -> List[RepoMakefileEntry]:
+                     compile_fn=docker_make) -> Iterator[RepoMakefileEntry]:
     r"""Compile all Makefiles as provided, and move generated binaries to the binary directory.
 
     :param repo_binary_dir: Path to the directory where generated binaries for the repository will be stored.
@@ -237,7 +238,6 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
     env = None
     if record_libraries:
         env = {"MOCK_GCC_LIBRARY_LOG": os.path.join(repo_binary_dir, "libraries.txt")}
-    makefiles: List[RepoMakefileEntry] = []
     remaining_time = compile_timeout
     for make_dir in makefile_dirs:
         if remaining_time is not None and remaining_time <= 0.0:
@@ -259,11 +259,10 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
                 digest = hash_obj.hexdigest()
                 sha256.append(digest)
                 shutil.move(path, os.path.join(repo_binary_dir, digest))
-            makefiles.append({
+            yield {
                 "directory": make_dir,
                 "success": compile_result.success,
                 "binaries": compile_result.elf_files,
                 "sha256": sha256,
-            })
+            }
     ghcc.clean(repo_path)
-    return makefiles

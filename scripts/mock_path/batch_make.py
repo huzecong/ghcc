@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import multiprocessing
 import os
 import pickle
+import time
+from typing import List
 
 import ghcc
 
@@ -10,28 +13,51 @@ parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15
 parser.add_argument("--record-libraries", action="store_true", default=False)
 args = parser.parse_args()
 
-SRC_REPO_PATH = "/usr/src/repo"
-REPO_PATH = "/usr/src/repo_copy"
+TIMEOUT_TOLERANCE = 5  # allow worker process to run for maximum 5 seconds beyond timeout
+REPO_PATH = "/usr/src/repo"
 BINARY_PATH = "/usr/src/bin"
 
 
-def main():
-    # try:
-    #     shutil.copytree(SRC_REPO_PATH, REPO_PATH)
-    # except shutil.Error:
-    #     pass  # `shutil.copytree` follows symlinks, which could be broken
-    global REPO_PATH
-    REPO_PATH = SRC_REPO_PATH
+def worker(q: multiprocessing.Queue):
     makefile_dirs = ghcc.find_makefiles(REPO_PATH)
 
-    makefiles = ghcc.compile_and_move(
-        BINARY_PATH, REPO_PATH, makefile_dirs, compile_fn=ghcc.unsafe_make,
-        compile_timeout=args.compile_timeout, record_libraries=args.record_libraries)
+    for makefile in ghcc.compile_and_move(
+            BINARY_PATH, REPO_PATH, makefile_dirs, compile_fn=ghcc.unsafe_make,
+            compile_timeout=args.compile_timeout, record_libraries=args.record_libraries):
+        q.put(makefile)
 
+
+def read_queue(makefiles: List[ghcc.RepoMakefileEntry], q: 'multiprocessing.Queue[ghcc.RepoMakefileEntry]'):
+    try:
+        while not q.empty():
+            makefiles.append(q.get())
+    except (OSError, ValueError):
+        pass  # data in queue could be corrupt, e.g. if worker process is terminated while enqueueing
+
+
+def main():
+    q = multiprocessing.Queue()
+    process = multiprocessing.Process(target=worker, args=(q,))
+    process.start()
+    start_time = time.time()
+
+    makefiles: List[ghcc.RepoMakefileEntry] = []
+    while process.is_alive():
+        time.sleep(2)  # no rush
+        cur_time = time.time()
+        if cur_time - start_time > args.compile_timeout + TIMEOUT_TOLERANCE:
+            process.terminate()
+            print(f"Timeout ({args.compile_timeout}s), killed", flush=True)
+            ghcc.clean(REPO_PATH)  # clean up after the worker process
+            break
+        read_queue(makefiles, q)
+    read_queue(makefiles, q)
+
+    ghcc.utils.kill_proc_tree(os.getpid(), including_parent=False)  # make sure all subprocesses are dead
     with open(os.path.join(BINARY_PATH, "log.pkl"), "wb") as f:
         pickle.dump(makefiles, f)
     ghcc.utils.run_command(["chmod", "-R", "g+w", BINARY_PATH])
-    ghcc.utils.run_command(["chmod", "-R", "g+w", SRC_REPO_PATH])
+    ghcc.utils.run_command(["chmod", "-R", "g+w", REPO_PATH])
 
 
 if __name__ == '__main__':

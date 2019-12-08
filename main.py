@@ -11,6 +11,7 @@ import os
 import pickle
 import shutil
 import subprocess
+import time
 import traceback
 from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Set
 
@@ -80,8 +81,9 @@ def contains_in_file(file_path: str, text: str) -> bool:
     return text in line
 
 
-def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
+def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: str,
                           compile_timeout: Optional[float], record_libraries: bool = False) -> List[RepoMakefileEntry]:
+    start_time = time.time()
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
         # get the results file if any compilation task timeouts.
@@ -89,18 +91,33 @@ def _docker_batch_compile(index: int, repo_binary_dir: str, repo_path: str,
             "batch_make.py",
             *(["--record-libraries"] if record_libraries else []),
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else [])],
-            user=(index % 10000) + 30000,  # user IDs 30000 ~ 39999
+            user=(repo_info.idx % 10000) + 30000,  # user IDs 30000 ~ 39999
             directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"}, return_output=True)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        raise e
+    except subprocess.CalledProcessError as e:
+        end_time = time.time()
+        if ((compile_timeout is not None and end_time - start_time > compile_timeout) or
+                b"Resource temporarily unavailable" in e.output):
+            # Usually exceptions at this stage are due to some badly written Makefiles that gets trapped in an infinite
+            # recursion. We suppress the exception and proceed normally, so we won't have to deal with it again when
+            # the program is rerun.
+            exception_handler(e, repo_info, _return=False)
+        else:
+            # Otherwise, it might be because Docker broke down or something.
+            raise e
 
-    with open(os.path.join(repo_binary_dir, "log.pkl"), "rb") as f:
-        makefiles: List[RepoMakefileEntry] = pickle.load(f)
-    os.remove(os.path.join(repo_binary_dir, "log.pkl"))
+    log_path = os.path.join(repo_binary_dir, "log.pkl")
+    makefiles: List[RepoMakefileEntry] = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "rb") as f:
+                makefiles = pickle.load(f)
+        except Exception:
+            makefiles = []
+        os.remove(log_path)
     return makefiles
 
 
-def exception_handler(e, *args, **kwargs):
+def exception_handler(e, *args, _return: bool = True, **kwargs):
     repo_info: RepoInfo = args[0] if len(args) > 0 else kwargs["repo_info"]
     exc_msg = f"<{e.__class__.__qualname__}> {e}"
     try:
@@ -108,6 +125,9 @@ def exception_handler(e, *args, **kwargs):
             ghcc.log(traceback.format_exc(), "error")
 
         ghcc.log(f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}: {exc_msg}", "error")
+        if _return:
+            # mark it as "failed to clone" so we don't deal with it anymore
+            return PipelineResult(repo_info, clone_success=False)
     except Exception as log_e:
         print(f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}: {exc_msg}")
         print(f"Another exception occurred while logging: <{log_e.__class__.__qualname__}> {log_e}")
@@ -256,10 +276,10 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 
         if docker_batch_compile:
             makefiles = _docker_batch_compile(
-                repo_info.idx, repo_binary_dir, repo_path, compile_timeout, record_libraries)
+                repo_info, repo_binary_dir, repo_path, compile_timeout, record_libraries)
         else:
-            makefiles = ghcc.compile_and_move(
-                repo_binary_dir, repo_path, makefile_dirs, compile_timeout, record_libraries)
+            makefiles = list(ghcc.compile_and_move(
+                repo_binary_dir, repo_path, makefile_dirs, compile_timeout, record_libraries))
         num_succeeded = sum(makefile["success"] for makefile in makefiles)
         if record_libraries:
             library_log_path = os.path.join(repo_binary_dir, "libraries.txt")
@@ -440,7 +460,8 @@ def main() -> None:
                     # There's probably an inconsistency somewhere if we didn't clone while `db_result` is None.
                     # To prevent more errors, just add it to the DB.
                     repo_size = result.repo_size or -1  # a value of zero is probably also wrong
-                    db.add_repo(repo_owner, repo_name, result.clone_success or True, repo_size=repo_size)
+                    clone_success = result.clone_success if result.clone_success is not None else True
+                    db.add_repo(repo_owner, repo_name, clone_success, repo_size=repo_size)
                     ghcc.log(f"Added {repo_owner}/{repo_name} to DB")
                 if result.makefiles is not None:
                     update_result = db.update_makefile(repo_owner, repo_name, result.makefiles,
@@ -477,10 +498,10 @@ def main() -> None:
                 f.write("\n".join(libraries))
         if args.n_procs > 0:
             pool.close()
-            try:
-                pool.join()
-            except KeyboardInterrupt:
-                pool.terminate()
+            # try:
+            #     pool.join()
+            # except KeyboardInterrupt:
+            pool.terminate()
             ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
 
 

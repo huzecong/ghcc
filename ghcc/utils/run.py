@@ -59,10 +59,12 @@ def error_wrapper(err: Exception) -> Exception:
     return err
 
 
-@tenacity.retry(retry=tenacity.retry_if_exception_type(OSError), reraise=True,
-                stop=tenacity.stop_after_attempt(6),  # retry 5 times
-                wait=tenacity.wait_random_exponential(multiplier=2, max=60),
-                before_sleep=_run_command_retry_logger)
+MAX_OUTPUT_LENGTH = 8192
+
+# @tenacity.retry(retry=tenacity.retry_if_exception_type(OSError), reraise=True,
+#                 stop=tenacity.stop_after_attempt(6),  # retry 5 times
+#                 wait=tenacity.wait_random_exponential(multiplier=2, max=60),
+#                 before_sleep=_run_command_retry_logger)
 def run_command(args: Union[str, List[str]], *,
                 env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
                 timeout: Optional[float] = None, return_output: bool = False, ignore_errors: bool = False,
@@ -88,7 +90,9 @@ def run_command(args: Union[str, List[str]], *,
                                  timeout=timeout, env=env, cwd=cwd, **kwargs)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             f.seek(0)
-            output = f.read()
+            output = f.read(MAX_OUTPUT_LENGTH + 1)  # truncate if longer than 8192 characters
+            if len(output) > MAX_OUTPUT_LENGTH:
+                output = output[:MAX_OUTPUT_LENGTH] + b"\n*** (remaining output truncated) ***"
             if ignore_errors:
                 return_code = e.returncode if isinstance(e, subprocess.CalledProcessError) else -32768
                 return CommandResult(args, return_code, output)
