@@ -465,7 +465,7 @@ def main() -> None:
                     ghcc.log(f"Added {repo_owner}/{repo_name} to DB")
                 if result.makefiles is not None:
                     update_result = db.update_makefile(repo_owner, repo_name, result.makefiles,
-                                                       ignore_length_mismatch=args.force_recompile)
+                                                       ignore_length_mismatch=True)
                     if not update_result:
                         ghcc.log(f"Makefiles of {repo_owner}/{repo_name} not saved to DB due to Unicode encoding "
                                  f"errors", "error")

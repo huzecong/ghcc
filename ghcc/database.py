@@ -119,8 +119,8 @@ class Database:
         if entry is None:
             raise ValueError(f"Specified repository {repo_owner}/{repo_name} does not exist")
         if not ignore_length_mismatch and len(entry["makefiles"]) not in [0, len(makefiles)]:
-            raise ValueError(f"Number of makefiles stored in entry ({len(entry['makefiles'])}) does not "
-                             f"match provided list ({len(makefiles)})")
+            raise ValueError(f"Number of makefiles stored in entry of {repo_owner}/{repo_name} "
+                             f"({len(entry['makefiles'])}) does not match provided list ({len(makefiles)})")
         update_entries = {
             "compiled": True,
             "num_makefiles": len(makefiles),
