@@ -17,11 +17,6 @@ RUN curl -o /usr/local/bin/gosu -SL "https://github.com/tianon/gosu/releases/dow
     && rm /usr/local/bin/gosu.asc \
     && chmod +x /usr/local/bin/gosu
 
-# Install Python libraries.
-COPY requirements.txt /usr/src/
-RUN pip install -r /usr/src/requirements.txt && \
-    rm /usr/src/requirements.txt
-
 # Install packages for compilation & ease-of-use.
 RUN apt-get install -y --no-install-recommends \
     less \
@@ -379,6 +374,11 @@ RUN apt-get install -y --no-install-recommends \
     portaudio19-dev \
     tcl-dev \
     vstream-client-dev
+
+# Install Python libraries.
+COPY requirements.txt /usr/src/
+RUN pip install -r /usr/src/requirements.txt && \
+    rm /usr/src/requirements.txt
 
 # Download convenience scripts.
 ENV CUSTOM_PATH="/usr/custom"

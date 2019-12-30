@@ -3,3 +3,4 @@ mypy_extensions
 pymongo
 tenacity
 termcolor
+tqdm
