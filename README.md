@@ -4,7 +4,8 @@ This project serves as the data collection process for training neural decompile
 [CMUSTRUDEL/DIRE](https://github.com/CMUSTRUDEL/DIRE).
 
 The code for compilation is adapted from
-[bvasiles/decompilationRenaming](https://github.com/bvasiles/decompilationRenaming).
+[bvasiles/decompilationRenaming](https://github.com/bvasiles/decompilationRenaming). The code for decompilation is
+adapted from [CMUSTRUDEL/DIRE](https://github.com/CMUSTRUDEL/DIRE). 
 
 ## Usage
 
