@@ -5,7 +5,6 @@
 
 # Requires Python 3
 
-import argparse
 import base64
 import datetime
 import errno
@@ -23,6 +22,8 @@ import tqdm
 from termcolor import colored
 
 import ghcc
+
+EnvDict = Dict[str, str]
 
 
 class Arguments(ghcc.arguments.Arguments):
@@ -69,25 +70,28 @@ AAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAATQABBQAAAAAAAAAAAAAAAGy/rUI=
         f.write(base64.decodebytes(encoded_registry_data))
 
 
-def run_decompiler(file_name: str, env: Dict[bytes, bytes], script: str, timeout: Optional[int] = None) -> bytes:
+def run_decompiler(file_name: str, script: str, env: Optional[EnvDict] = None,
+                   timeout: Optional[int] = None) -> bytes:
     r"""Run a decompiler script.
 
-    Keyword arguments:
-    file_name -- the binary to be decompiled
-    env -- an os.environ mapping, useful for passing arguments
-    script -- the script file to run
-    timeout -- timeout in seconds (default no timeout)
+    :param file_name: The binary to be decompiled.
+    :param env: An `os.environ` mapping, useful for passing arguments.
+    :param script: The script file to run.
+    :param timeout: Timeout in seconds (default no timeout).
     """
     idacall = [args.ida, '-B', f'-S{script}', file_name]
     try:
         output = ghcc.utils.run_command(idacall, env=env, timeout=timeout)
     except subprocess.CalledProcessError as e:
+        if b"Traceback (most recent call last):" in e.output:
+            # Exception raised by Python script called by IDA, throw it up.
+            raise e
         ghcc.utils.run_command(['rm', '-f', f'{file_name}.i64'])
         output = e.output
         if b"Corrupted pseudo-registry file" in e.output:
             write_pseudo_registry()
             # Run again without try-catch; if it fails, it should crash.
-            output = subprocess.check_output(idacall, env=env, timeout=timeout)
+            output = ghcc.utils.run_command(idacall, env=env, timeout=timeout)
     return output
 
 
@@ -120,7 +124,7 @@ def exception_handler(e, *args, _return: bool = True, **kwargs):
 
 
 @ghcc.utils.exception_wrapper(exception_handler)
-def decompile(paths: Tuple[str, str], env: Optional[Dict[bytes, bytes]] = None) -> DecompilationResult:
+def decompile(paths: Tuple[str, str], env: Optional[EnvDict] = None) -> DecompilationResult:
     binary_path, original_path = paths
 
     def create_result(status: DecompilationStatus, time: Optional[datetime.timedelta] = None) -> DecompilationResult:
@@ -128,38 +132,38 @@ def decompile(paths: Tuple[str, str], env: Optional[Dict[bytes, bytes]] = None) 
 
     start = datetime.datetime.now()
     env = (env or {}).copy()
-    env[b'PREFIX'] = binary_path.encode("utf-8")
+    env['PREFIX'] = os.path.split(binary_path)[1]
     file_path = os.path.join(args.binaries_dir, binary_path)
-    with tempfile.NamedTemporaryFile() as collected_vars:
-        # First collect variables.
-        env[b'COLLECTED_VARS'] = collected_vars.name.encode("utf-8")
-        with tempfile.NamedTemporaryFile() as orig:
-            subprocess.check_output(['cp', file_path, orig.name])
-            # Timeout after 30 seconds for first run.
-            try:
-                run_decompiler(orig.name, env, COLLECT, timeout=args.timeout)
-            except subprocess.TimeoutExpired:
-                return create_result(DecompilationStatus.TimedOut)
-            try:
-                if not pickle.load(collected_vars):
+    with tempfile.TemporaryDirectory() as tempdir:
+        with tempfile.NamedTemporaryFile(dir=tempdir) as collected_vars:
+            # First collect variables.
+            env['COLLECTED_VARS'] = collected_vars.name
+            with tempfile.NamedTemporaryFile(dir=tempdir) as orig:
+                ghcc.utils.run_command(['cp', file_path, orig.name])
+                # Timeout after 30 seconds for first run.
+                try:
+                    run_decompiler(orig.name, COLLECT, env=env, timeout=args.timeout)
+                except subprocess.TimeoutExpired:
+                    return create_result(DecompilationStatus.TimedOut)
+                try:
+                    assert pickle.load(collected_vars)  # non-empty
+                except:
                     return create_result(DecompilationStatus.NoVariables)
-            except:
-                return create_result(DecompilationStatus.NoVariables)
-        # Make a new stripped copy and pass it the collected vars.
-        with tempfile.NamedTemporaryFile() as stripped:
-            ghcc.utils.run_command(['cp', file_path, stripped.name])
-            ghcc.utils.run_command(['strip', '--strip-debug', stripped.name])
-            # Dump the trees.
-            # No timeout here, we know it'll run in a reasonable amount of
-            # time and don't want mismatched files.
-            run_decompiler(stripped.name, env, DUMP_TREES)
+            # Make a new stripped copy and pass it the collected vars.
+            with tempfile.NamedTemporaryFile(dir=tempdir) as stripped:
+                ghcc.utils.run_command(['cp', file_path, stripped.name])
+                ghcc.utils.run_command(['strip', '--strip-debug', stripped.name])
+                # Dump the trees.
+                # No timeout here, we know it'll run in a reasonable amount of
+                # time and don't want mismatched files.
+                run_decompiler(stripped.name, DUMP_TREES, env=env)
     end = datetime.datetime.now()
     duration = end - start
     return create_result(DecompilationStatus.Success, duration)
 
 
 def main():
-    env = os.environ.copy()
+    env: EnvDict = os.environ.copy()
     env['IDALOG'] = '/dev/stdout'
 
     # Check for/create output directories
@@ -186,25 +190,23 @@ def main():
                 binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
 
     # Create a temporary directory, since the decompiler makes a lot of additional
-    # files that we can't clean up from here
-    with tempfile.TemporaryDirectory() as tempdir:
-        tempfile.tempdir = tempdir
-
-        file_count = 1
-        progress = tqdm.tqdm(binaries.values(), ncols=120)
-        pool = ghcc.utils.Pool(processes=args.n_procs)
-        for result in pool.imap_unordered(functools.partial(decompile, env=env), progress):
-            file_count += 1
-            if result is None:
-                continue  # exception raised
-            if result.status is DecompilationStatus.Success:
-                assert result.time is not None
-                status_msg = colored(f"[OK {result.time.total_seconds():5.2f}s]", "green")
-            elif result.status is DecompilationStatus.TimedOut:
-                status_msg = colored(f"[TIMED OUT]", "yellow")
-            else:  # DecompilationStatus.NoVariables
-                status_msg = colored(f"[NO VARS]", "yellow")
-            progress.write(f"{status_msg} {file_count}: {result.original_path} ({result.binary_path})")
+    # files that we can't clean up from here.
+    file_count = 1
+    progress = tqdm.tqdm(binaries.values(), ncols=120)
+    pool = ghcc.utils.Pool(processes=args.n_procs)
+    for result in pool.imap_unordered(functools.partial(decompile, env=env), progress):
+        file_count += 1
+        if result is None:
+            continue  # exception raised
+        if result.status is DecompilationStatus.Success:
+            assert result.time is not None
+            status_msg = colored(f"[OK {result.time.total_seconds():5.2f}s]", "green")
+        elif result.status is DecompilationStatus.TimedOut:
+            status_msg = colored(f"[TIMED OUT]", "yellow")
+        else:  # DecompilationStatus.NoVariables
+            status_msg = colored(f"[NO VARS]", "yellow")
+        progress.write(f"{status_msg} {file_count}: {result.original_path} ({result.binary_path})")
+    pool.close()
 
 
 if __name__ == '__main__':
