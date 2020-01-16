@@ -96,7 +96,7 @@ def clone(repo_owner: str, repo_name: str, clone_folder: str, folder_name: Optio
     # Lucky that this is introduced in version 2.3; otherwise would have to poll waiting channel of current process
     # and see if it's waiting for IO.
     # See: https://askubuntu.com/questions/19442/what-is-the-waiting-channel-of-a-process
-    env = {b"GIT_TERMINAL_PROMPT": b"0"}
+    env = {"GIT_TERMINAL_PROMPT": "0"}
 
     def try_clone():
         # If a true git error was thrown, re-raise it and let the outer code deal with it.

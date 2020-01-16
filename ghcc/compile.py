@@ -101,6 +101,7 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[float] = None,
         # Use Git to find all unversioned files -- these would be the products of compilation.
         output = run_command(["git", "ls-files", "--others"], cwd=directory,
                              timeout=timeout, return_output=True).captured_output
+        assert output is not None
         diff_files = [
             # files containing escape characters are in quotes
             file if file[0] != '"' else file[1:-1]
@@ -124,10 +125,7 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[float] = None,
 
 
 def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> None:
-    env = {
-        b"PATH": f"{MOCK_PATH}:{os.environ['PATH']}".encode('utf-8'),
-        **{k.encode('utf-8'): v.encode('utf-8') for k, v in (env or {}).items()},
-    }
+    env = {"PATH": f"{MOCK_PATH}:{os.environ['PATH']}", **(env or {})}
     # Try GNU Automake first. Note that errors are ignored because it's possible that the original files still work.
     if contains_files(directory, ["configure.ac", "configure.in"]):
         start_time = time.time()

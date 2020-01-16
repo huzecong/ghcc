@@ -66,7 +66,7 @@ MAX_OUTPUT_LENGTH = 8192
 #                 wait=tenacity.wait_random_exponential(multiplier=2, max=60),
 #                 before_sleep=_run_command_retry_logger)
 def run_command(args: Union[str, List[str]], *,
-                env: Optional[Dict[bytes, bytes]] = None, cwd: Optional[str] = None,
+                env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None,
                 timeout: Optional[float] = None, return_output: bool = False, ignore_errors: bool = False,
                 **kwargs) -> CommandResult:
     r"""A wrapper over ``subprocess.check_output`` that prevents deadlock caused by the combination of pipes and

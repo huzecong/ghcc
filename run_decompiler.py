@@ -72,7 +72,7 @@ AAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAATQABBQAAAAAAAAAAAAAAAGy/rUI=
 
 
 def run_decompiler(file_name: str, script: str, env: Optional[EnvDict] = None,
-                   timeout: Optional[int] = None) -> bytes:
+                   timeout: Optional[int] = None):
     r"""Run a decompiler script.
 
     :param file_name: The binary to be decompiled.
@@ -82,18 +82,16 @@ def run_decompiler(file_name: str, script: str, env: Optional[EnvDict] = None,
     """
     idacall = [args.ida, '-B', f'-S{script}', file_name]
     try:
-        output = ghcc.utils.run_command(idacall, env=env, timeout=timeout)
+        ghcc.utils.run_command(idacall, env=env, timeout=timeout)
     except subprocess.CalledProcessError as e:
         if b"Traceback (most recent call last):" in e.output:
             # Exception raised by Python script called by IDA, throw it up.
             raise e
         ghcc.utils.run_command(['rm', '-f', f'{file_name}.i64'])
-        output = e.output
         if b"Corrupted pseudo-registry file" in e.output:
             write_pseudo_registry()
             # Run again without try-catch; if it fails, it should crash.
-            output = ghcc.utils.run_command(idacall, env=env, timeout=timeout)
-    return output
+            ghcc.utils.run_command(idacall, env=env, timeout=timeout)
 
 
 class DecompilationStatus(Enum):

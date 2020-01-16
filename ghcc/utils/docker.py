@@ -70,8 +70,10 @@ def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None
 def verify_docker_image() -> bool:
     r"""Checks whether the Docker image is up-to-date. This is done by verifying the modification dates for all library
     files are earlier than the Docker image build date."""
-    image_creation_time_string = run_command(["docker", "image", "ls", "gcc-custom", "--format", "{{.CreatedAt}}"],
-                                             return_output=True).captured_output.decode("utf-8").strip()
+    output = run_command(
+        ["docker", "image", "ls", "gcc-custom", "--format", "{{.CreatedAt}}"], return_output=True).captured_output
+    assert output is not None
+    image_creation_time_string = output.decode("utf-8").strip()
     image_creation_timestamp = datetime.strptime(image_creation_time_string, "%Y-%m-%d %H:%M:%S %z %Z").timestamp()
 
     repo_root: Path = Path(__file__).parent.parent.parent

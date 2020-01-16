@@ -37,12 +37,12 @@ def _bool_conversion_fn(s: str) -> bool:
 
 
 def _optional_wrapper_fn(fn: Optional[ConversionFn[T]] = None) -> ConversionFn[Optional[T]]:
-    @functools.wraps(fn)
+    @functools.wraps(fn)  # type: ignore  # this works even if `fn` is None
     def wrapped(s: str) -> Optional[T]:
         if s.lower() == 'none':
             return None
         if fn is None:
-            return s
+            return s  # type: ignore
         return fn(s)
 
     return wrapped

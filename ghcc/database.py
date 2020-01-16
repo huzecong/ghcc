@@ -24,6 +24,7 @@ class RepoEntry(TypedDict):
     _id: Any  # actually `bson.ObjectId`, but we don't care
     repo_owner: str
     repo_name: str
+    repo_size: int  # size of the repo in bytes
     clone_successful: bool  # whether the repo has been successfully cloned to the server
     compiled: bool  # whether the repo has been tested for compilation
     num_makefiles: int  # number of compilable Makefiles (required because MongoDB cannot aggregate list lengths)
@@ -85,7 +86,7 @@ class Database:
         """
         record = self.get(repo_owner, repo_name)
         if record is None:
-            record = {
+            record = {  # type: ignore
                 "repo_owner": repo_owner,
                 "repo_name": repo_name,
                 "clone_successful": clone_successful,
