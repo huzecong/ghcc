@@ -31,4 +31,4 @@ def readable_size(size: float) -> str:
 def get_file_lines(path: str) -> int:
     r"""Get number of lines in text file.
     """
-    return int(subprocess.check_output(['wc', '-l', path]).decode('utf-8'))
+    return int(subprocess.check_output(['wc', '-l', path]).split()[0].decode('utf-8'))

@@ -27,11 +27,12 @@ EnvDict = Dict[str, str]
 
 
 class Arguments(ghcc.arguments.Arguments):
-    binaries_dir: str  # directory containing binaries
-    output_dir: str  # output directory
+    binaries_dir: str = "binaries/"  # directory containing binaries
+    output_dir: str = "decompile_output/"  # output directory
+    log_file: str = "decompile-log.txt"
     ida: str = "/data2/jlacomis/ida/idat64"  # location of the `idat64` binary
     timeout: int = 30  # decompilation timeout
-    n_procs: int = 8  # number of processes
+    n_procs: int = 16  # number of processes
 
 
 args = Arguments()
@@ -134,6 +135,9 @@ def decompile(paths: Tuple[str, str], env: Optional[EnvDict] = None) -> Decompil
     env = (env or {}).copy()
     env['PREFIX'] = os.path.split(binary_path)[1]
     file_path = os.path.join(args.binaries_dir, binary_path)
+
+    # Create a temporary directory, since the decompiler makes a lot of additional
+    # files that we can't clean up from here.
     with tempfile.TemporaryDirectory() as tempdir:
         with tempfile.NamedTemporaryFile(dir=tempdir) as collected_vars:
             # First collect variables.
@@ -176,6 +180,7 @@ def main():
     if os.path.exists('/dev/shm'):
         tempfile.tempdir = '/dev/shm'
 
+    ghcc.set_log_file(args.log_file)
     write_pseudo_registry()
 
     # Obtain a list of all binaries
@@ -189,8 +194,8 @@ def main():
             for path, sha in zip(makefile['binaries'], makefile['sha256']):
                 binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
 
-    # Create a temporary directory, since the decompiler makes a lot of additional
-    # files that we can't clean up from here.
+    ghcc.log(f"{len(binaries)} binaries to process.")
+    ghcc.set_logging_level("error", console=True)  # prevent `ghcc.log` from writing to console, since we're using tqdm
     file_count = 1
     progress = tqdm.tqdm(binaries.values(), ncols=120)
     pool = ghcc.utils.Pool(processes=args.n_procs)
@@ -200,12 +205,14 @@ def main():
             continue  # exception raised
         if result.status is DecompilationStatus.Success:
             assert result.time is not None
-            status_msg = colored(f"[OK {result.time.total_seconds():5.2f}s]", "green")
+            status_msg, color = f"[OK {result.time.total_seconds():5.2f}s]", "green"
         elif result.status is DecompilationStatus.TimedOut:
-            status_msg = colored(f"[TIMED OUT]", "yellow")
+            status_msg, color = "[TIMED OUT]", "yellow"
         else:  # DecompilationStatus.NoVariables
-            status_msg = colored(f"[NO VARS]", "yellow")
-        progress.write(f"{status_msg} {file_count}: {result.original_path} ({result.binary_path})")
+            status_msg, color = "[NO VARS]", "yellow"
+        message = f"{file_count}: {result.original_path} ({result.binary_path})"
+        progress.write(f"{colored(status_msg, color)} {message}")
+        ghcc.log(f"{status_msg} {message}", "info")  # only writes to log file
     pool.close()
 
 
