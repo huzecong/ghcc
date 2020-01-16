@@ -11,6 +11,7 @@ import ghcc
 parser = argparse.ArgumentParser()
 parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
 parser.add_argument("--record-libraries", action="store_true", default=False)
+parser.add_argument("--gcc-override-flags", type=str, default=None)
 args = parser.parse_args()
 
 TIMEOUT_TOLERANCE = 5  # allow worker process to run for maximum 5 seconds beyond timeout
@@ -23,7 +24,8 @@ def worker(q: multiprocessing.Queue):
 
     for makefile in ghcc.compile_and_move(
             BINARY_PATH, REPO_PATH, makefile_dirs, compile_fn=ghcc.unsafe_make,
-            compile_timeout=args.compile_timeout, record_libraries=args.record_libraries):
+            compile_timeout=args.compile_timeout, record_libraries=args.record_libraries,
+            gcc_override_flags=args.gcc_override_flags):
         q.put(makefile)
 
 

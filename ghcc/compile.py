@@ -206,6 +206,10 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
     .. note::
         The ``gcc-custom`` Docker image is used. You can build this using the Dockerfile under the root directory.
 
+    .. warning::
+        It is only possible to run one bash command in a (non-interactive) Docker session, the compilation heuristics
+        used here is the original version. It is recommended to call `batch_make.py` instead of relying on this method.
+
     :param directory: Path to the directory containing the Makefile.
     :param timeout: Maximum time allowed for compilation, in seconds. Defaults to ``None`` (unlimited time).
     :param env: The environment variables to use when calling ``make``.
@@ -219,6 +223,7 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
 
 def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[str],
                      compile_timeout: Optional[float] = None, record_libraries: bool = False,
+                     gcc_override_flags: Optional[str] = None,
                      compile_fn=docker_make) -> Iterator[RepoMakefileEntry]:
     r"""Compile all Makefiles as provided, and move generated binaries to the binary directory.
 
@@ -231,11 +236,14 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
         :attr:`repo_binary_dir`, recording the libraries used in compilation. Defaults to ``False``.
     :param compile_fn: The method to call for compilation. Possible values are :meth:`ghcc.unsafe_make` and
         :meth:`ghcc.docker_make` (default).
+    :param gcc_override_flags: If not ``None``, these flags will be appended to each invocation of GCC.
     :return: A list of Makefile compilation results.
     """
-    env = None
+    env = {}
     if record_libraries:
-        env = {"MOCK_GCC_LIBRARY_LOG": os.path.join(repo_binary_dir, "libraries.txt")}
+        env["MOCK_GCC_LIBRARY_LOG"] = os.path.join(repo_binary_dir, "libraries.txt")
+    if gcc_override_flags is not None:
+        env["MOCK_GCC_OVERRIDE_FLAGS"] = gcc_override_flags
     remaining_time = compile_timeout
     for make_dir in makefile_dirs:
         if remaining_time is not None and remaining_time <= 0.0:

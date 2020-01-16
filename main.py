@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import time
 import traceback
-from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Set
+from typing import Callable, Iterator, List, NamedTuple, Optional, Set
 
 from mypy_extensions import TypedDict
 
@@ -42,6 +42,7 @@ class Arguments(ghcc.arguments.Arguments):
     recursive_clone: Switch = False  # if True, use `--recursive` when `git clone`
     write_db: Switch = True  # only modify the DB when True
     record_metainfo: Switch = False  # if True, record a bunch of other stuff
+    gcc_override_flags: Optional[str] = None  # GCC flags to use during compilation, e.g. "-O2 -march=x86-64"
 
 
 class RepoInfo(NamedTuple):
@@ -82,7 +83,8 @@ def contains_in_file(file_path: str, text: str) -> bool:
 
 
 def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: str,
-                          compile_timeout: Optional[float], record_libraries: bool = False) -> List[RepoMakefileEntry]:
+                          compile_timeout: Optional[float], record_libraries: bool = False,
+                          gcc_override_flags: Optional[str] = None) -> List[RepoMakefileEntry]:
     start_time = time.time()
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
@@ -90,7 +92,8 @@ def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: 
         ret = ghcc.utils.run_docker_command([
             "batch_make.py",
             *(["--record-libraries"] if record_libraries else []),
-            *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else [])],
+            *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else []),
+            *(["--gcc-override-flags", f'"{gcc_override_flags}"'] if gcc_override_flags is not None else [])],
             user=(repo_info.idx % 10000) + 30000,  # user IDs 30000 ~ 39999
             directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"}, return_output=True)
     except subprocess.CalledProcessError as e:
@@ -140,7 +143,8 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                       clone_timeout: Optional[float] = None, compile_timeout: Optional[float] = None,
                       force_reclone: bool = False, force_recompile: bool = False, docker_batch_compile: bool = True,
                       max_archive_size: Optional[int] = None, compression_type: str = "gzip",
-                      record_libraries: bool = False, record_metainfo: bool = False) -> PipelineResult:
+                      record_libraries: bool = False, record_metainfo: bool = False,
+                      gcc_override_flags: Optional[str] = None) -> PipelineResult:
     r"""Perform the entire pipeline.
 
     :param repo_info: Information about the repository.
@@ -166,6 +170,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ``"xz"`` (smaller).
     :param record_libraries: If ``True``, record the libraries used in compilation.
     :param record_metainfo: If ``True``, record meta-info values.
+    :param gcc_override_flags: If not ``None``, these flags will be appended to each invocation of GCC.
 
     :return: An entry to insert into the DB, or `None` if no operations are required.
     """
@@ -276,10 +281,10 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 
         if docker_batch_compile:
             makefiles = _docker_batch_compile(
-                repo_info, repo_binary_dir, repo_path, compile_timeout, record_libraries)
+                repo_info, repo_binary_dir, repo_path, compile_timeout, record_libraries, gcc_override_flags)
         else:
             makefiles = list(ghcc.compile_and_move(
-                repo_binary_dir, repo_path, makefile_dirs, compile_timeout, record_libraries))
+                repo_binary_dir, repo_path, makefile_dirs, compile_timeout, record_libraries, gcc_override_flags))
         num_succeeded = sum(makefile["success"] for makefile in makefiles)
         if record_libraries:
             library_log_path = os.path.join(repo_binary_dir, "libraries.txt")
@@ -445,7 +450,8 @@ def main() -> None:
             force_reclone=args.force_reclone, force_recompile=args.force_recompile,
             docker_batch_compile=args.docker_batch_compile,
             max_archive_size=args.max_archive_size, compression_type=args.compression_type,
-            record_libraries=(args.record_libraries is not None), record_metainfo=args.record_metainfo)
+            record_libraries=(args.record_libraries is not None), record_metainfo=args.record_metainfo,
+            gcc_override_flags=args.gcc_override_flags)
         repo_count = 0
         meta_info = MetaInfo()
         for result in pool.imap_unordered(pipeline_fn, iterator):

@@ -39,6 +39,8 @@ def main():
     all_paths = [os.path.abspath(path) for path in os.environ["PATH"].split(":")]
     env = {b"PATH": ':'.join(path for path in all_paths if path != cur_path).encode('utf-8')}
 
+    override_flags = os.environ.get("MOCK_GCC_OVERRIDE_FLAGS", "").split()
+
     # Gather library names that the program is linked to.
     # Note that this is only called if exception occurs, or GCC fails. This gets rid of libraries that are installed.
     def write_libraries():
@@ -65,7 +67,7 @@ def main():
     try:
         gcc = "gcc"  # "gcc-4.7"
         # When multiple -O options are specified, the last one takes precedence.
-        gcc_args = [gcc] + known_args + unknown_args + ["-o", out_file, "-O0", "-g"]
+        gcc_args = [gcc] + known_args + unknown_args + ["-o", out_file, "-O0", "-g"] + override_flags
         # Add linker options after files that use them.
         gcc_args.extend([f"-l{lib}" for lib in (args.l or [])])
         sys.stderr.write("Mock GCC: " + ' '.join(gcc_args) + "\n")
