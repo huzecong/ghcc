@@ -23,7 +23,7 @@ from ghcc.arguments import Choices, Switch
 
 
 class Arguments(ghcc.arguments.Arguments):
-    repo_list_file: str = "../c-repos.csv"
+    repo_list_file: str
     clone_folder: str = "repos/"  # where cloned repositories are stored (temporarily)
     binary_folder: str = "binaries/"  # where compiled binaries are stored
     archive_folder: str = "archives/"  # where archived repositories are stored
@@ -39,7 +39,7 @@ class Arguments(ghcc.arguments.Arguments):
     record_libraries: Optional[str] = None  # gather libraries used in Makefiles and print to the specified file
     logging_level: Choices[ghcc.logging.get_levels()] = "info"
     max_repos: Optional[int] = None  # maximum number of repositories to process (ignoring non-existent)
-    recursive_clone: Switch = False  # if True, use `--recursive` when `git clone`
+    recursive_clone: Switch = True  # if True, use `--recursive` when `git clone`
     write_db: Switch = True  # only modify the DB when True
     record_metainfo: Switch = False  # if True, record a bunch of other stuff
     gcc_override_flags: Optional[str] = None  # GCC flags to use during compilation, e.g. "-O2 -march=x86-64"
@@ -208,6 +208,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
             return PipelineResult(repo_info)  # return dummy info
         repo_size = ghcc.utils.get_folder_size(repo_path)
     elif (repo_entry is None or  # not processed
+          force_reclone or
           (repo_entry["clone_successful"] and  # not compiled
            (not repo_entry["compiled"] or force_recompile) and not os.path.exists(repo_path))):
         clone_result = ghcc.clone(
@@ -337,7 +338,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
 def iter_repos(db: ghcc.Database, repo_list_path: str, max_count: Optional[int] = None) -> Iterator[RepoInfo]:
     db_entries = {
         (entry["repo_owner"], entry["repo_name"]): entry
-        for entry in db.collection.find()
+        for entry in db.collection.find()  # getting stuff in batch is much faster
     }
     ghcc.log(f"{len(db_entries)} entries loaded from DB")
     index = 0
@@ -345,8 +346,10 @@ def iter_repos(db: ghcc.Database, repo_list_path: str, max_count: Optional[int] 
         for line in repo_file:
             if not line:
                 continue
-            url = line.split()[1]
-            repo_owner, repo_name = url.rstrip("/").split("/")[-2:]
+            url = line.strip().rstrip("/")
+            if url.endswith(".git"):
+                url = url[:-len(".git")]
+            repo_owner, repo_name = url.split("/")[-2:]
             # db_result = db.get(repo_owner, repo_name)
             db_result = db_entries.get((repo_owner, repo_name), None)
             yield RepoInfo(index, repo_owner, repo_name, db_result)

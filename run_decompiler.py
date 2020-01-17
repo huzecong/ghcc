@@ -32,7 +32,7 @@ class Arguments(ghcc.arguments.Arguments):
     log_file: str = "decompile-log.txt"
     ida: str = "/data2/jlacomis/ida/idat64"  # location of the `idat64` binary
     timeout: int = 30  # decompilation timeout
-    n_procs: int = 16  # number of processes
+    n_procs: int = 0  # number of processes
 
 
 args = Arguments()
