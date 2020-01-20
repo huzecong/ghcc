@@ -2,7 +2,7 @@ import abc
 import json
 import os
 import sys
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import pymongo
 from mypy_extensions import TypedDict
@@ -40,10 +40,10 @@ class Database(abc.ABC):
         raise NotImplementedError
 
     @property
-    def index(self) -> List[Tuple[str, int]]:
+    def index(self) -> Dict[str, int]:
         r"""Key(s) to use as index. Each key is represented as a tuple of (name, order), where order is
         ``pymongo.ASCENDING`` (1) or ``pymongo.DESCENDING`` (-1)."""
-        return []
+        return {}
 
     def __init__(self, config_file: str = "./database-config.json"):
         r"""Create a connection to the database.
@@ -64,7 +64,10 @@ class Database(abc.ABC):
         self.collection = self.client[config['db_name']][self.collection_name]
 
         if len(self.index) > 0:
-            self.collection.create_index(self.index, unique=True, background=True)
+            if not any(index["key"].to_dict() == self.index for index in self.collection.list_indexes()):
+                # Only create index if no such index exists.
+                # This check is required because `create_index` seems not idempotent, although it should be.
+                self.collection.create_index(list(self.index.items()), unique=True, background=True)
 
     def close(self) -> None:
         del self.collection
@@ -96,9 +99,11 @@ class RepoDB(Database):
         return "repos"
 
     @property
-    def index(self) -> List[Tuple[str, int]]:
-        return [("repo_owner", pymongo.ASCENDING),
-                ("repo_name", pymongo.ASCENDING)]
+    def index(self) -> Dict[str, int]:
+        return {
+            "repo_owner": pymongo.ASCENDING,
+            "repo_name": pymongo.ASCENDING,
+        }
 
     def get(self, repo_owner: str, repo_name: str) -> Optional[Entry]:
         r"""Get the DB entry corresponding to the specified repository.
@@ -194,8 +199,8 @@ class BinaryDB(Database):
         return "binaries"
 
     @property
-    def index(self) -> List[Tuple[str, int]]:
-        return [("sha", pymongo.ASCENDING)]
+    def index(self) -> Dict[str, int]:
+        return {"sha": pymongo.ASCENDING}
 
     def get(self, sha: str) -> Optional[Entry]:
         r"""Get the DB entry corresponding to the specified binary hash.
