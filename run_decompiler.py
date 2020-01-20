@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Dict, NamedTuple, Optional, Tuple
 
 import tqdm
-from termcolor import colored
 
 import ghcc
 
@@ -31,6 +30,7 @@ class Arguments(ghcc.arguments.Arguments):
     output_dir: str = "decompile_output/"  # output directory
     log_file: str = "decompile-log.txt"
     ida: str = "/data2/jlacomis/ida/idat64"  # location of the `idat64` binary
+    binary_mapping_cache_file: Optional[str] = "binary_mapping.pkl"
     timeout: int = 30  # decompilation timeout
     n_procs: int = 0  # number of processes
 
@@ -95,6 +95,7 @@ def run_decompiler(file_name: str, script: str, env: Optional[EnvDict] = None,
 
 
 class DecompilationStatus(Enum):
+    Exists = auto()
     Success = auto()
     TimedOut = auto()
     NoVariables = auto()
@@ -123,20 +124,30 @@ def exception_handler(e, *args, _return: bool = True, **kwargs):
 
 
 @ghcc.utils.exception_wrapper(exception_handler)
-def decompile(paths: Tuple[str, str], env: Optional[EnvDict] = None) -> DecompilationResult:
+def decompile(paths: Tuple[str, str], output_dir: str, binary_dir: str,
+              timeout: Optional[int] = None) -> DecompilationResult:
     binary_path, original_path = paths
 
     def create_result(status: DecompilationStatus, time: Optional[datetime.timedelta] = None) -> DecompilationResult:
         return DecompilationResult(binary_path, original_path, status, time)
 
+    binary_hash = os.path.split(binary_path)[1]
+    output_path = os.path.join(output_dir, f"{binary_hash}.jsonl")
+    if os.path.exists(output_path):
+        # Binary already decompiled.
+        return create_result(DecompilationStatus.Exists)
+
     start = datetime.datetime.now()
-    env = (env or {}).copy()
-    env['PREFIX'] = os.path.split(binary_path)[1]
-    file_path = os.path.join(args.binaries_dir, binary_path)
+    env: EnvDict = os.environ.copy()
+    env['IDALOG'] = '/dev/stdout'
+    env['PREFIX'] = binary_hash
+    file_path = os.path.join(binary_dir, binary_path)
 
     # Create a temporary directory, since the decompiler makes a lot of additional
     # files that we can't clean up from here.
     with tempfile.TemporaryDirectory() as tempdir:
+        # Put the output JSONL file here as well to prevent partially-generated files.
+        env['OUTPUT_DIR'] = os.path.abspath(tempdir)
         with tempfile.NamedTemporaryFile(dir=tempdir) as collected_vars:
             # First collect variables.
             env['COLLECTED_VARS'] = collected_vars.name
@@ -144,12 +155,14 @@ def decompile(paths: Tuple[str, str], env: Optional[EnvDict] = None) -> Decompil
                 ghcc.utils.run_command(['cp', file_path, orig.name])
                 # Timeout after 30 seconds for first run.
                 try:
-                    run_decompiler(orig.name, COLLECT, env=env, timeout=args.timeout)
+                    run_decompiler(orig.name, COLLECT, env=env, timeout=timeout)
                 except subprocess.TimeoutExpired:
+                    ghcc.log(f"[TIMED OUT] {original_path} ({binary_path})", "warning")
                     return create_result(DecompilationStatus.TimedOut)
                 try:
                     assert pickle.load(collected_vars)  # non-empty
                 except:
+                    ghcc.log(f"[NO VARS] {original_path} ({binary_path})", "warning")
                     return create_result(DecompilationStatus.NoVariables)
             # Make a new stripped copy and pass it the collected vars.
             with tempfile.NamedTemporaryFile(dir=tempdir) as stripped:
@@ -159,20 +172,22 @@ def decompile(paths: Tuple[str, str], env: Optional[EnvDict] = None) -> Decompil
                 # No timeout here, we know it'll run in a reasonable amount of
                 # time and don't want mismatched files.
                 run_decompiler(stripped.name, DUMP_TREES, env=env)
+        jsonl_path = os.path.join(tempdir, f"{binary_hash}.jsonl")
+        ghcc.utils.run_command(['cp', jsonl_path, output_path])
     end = datetime.datetime.now()
     duration = end - start
+    ghcc.log(f"[OK {duration.total_seconds():5.2f}s] {original_path} ({binary_path})", "success")
     return create_result(DecompilationStatus.Success, duration)
 
 
 def main():
-    env: EnvDict = os.environ.copy()
-    env['IDALOG'] = '/dev/stdout'
+    if args.n_procs == 0:
+        # Only do this on the single-threaded case.
+        ghcc.utils.register_ipython_excepthook()
+    ghcc.log(f"Running with {args.n_procs} worker processes", "warning")
 
     # Check for/create output directories
-    output_dir = os.path.abspath(args.output_dir)
-    env['OUTPUT_DIR'] = output_dir
-
-    make_directory(output_dir)
+    make_directory(args.output_dir)
 
     # Use RAM-backed memory for tmp if available
     if os.path.exists('/dev/shm'):
@@ -182,35 +197,43 @@ def main():
     write_pseudo_registry()
 
     # Obtain a list of all binaries
-    db = ghcc.Database()
+    db = ghcc.RepoDB()
     all_repos = db.collection.find()
     binaries: Dict[str, Tuple[str, str]] = {}  # sha -> (path_to_bin, orig_path_in_repo)
-    for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
-        prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
-        for makefile in repo['makefiles']:
-            directory = f"{prefix}/" + makefile['directory'][len("/usr/src/repo/"):]
-            for path, sha in zip(makefile['binaries'], makefile['sha256']):
-                binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
+    if args.binary_mapping_cache_file is not None and os.path.exists(args.binary_mapping_cache_file):
+        with open(args.binary_mapping_cache_file, "rb") as f:
+            binaries = pickle.load(f)
+        ghcc.log(f"Binary mapping cache loaded from '{args.binary_mapping_cache_file}'")
+    else:
+        for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
+            prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
+            for makefile in repo['makefiles']:
+                directory = f"{prefix}/" + makefile['directory'][len("/usr/src/repo/"):]
+                for path, sha in zip(makefile['binaries'], makefile['sha256']):
+                    binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
+        if args.binary_mapping_cache_file is not None:
+            with open(args.binary_mapping_cache_file, "wb") as f:
+                pickle.dump(binaries, f)
+            ghcc.log(f"Binary mapping cache saved to '{args.binary_mapping_cache_file}'")
 
     ghcc.log(f"{len(binaries)} binaries to process.")
-    ghcc.set_logging_level("error", console=True)  # prevent `ghcc.log` from writing to console, since we're using tqdm
-    file_count = 1
-    progress = tqdm.tqdm(binaries.values(), ncols=120)
+    # ghcc.set_logging_level("error", file=False)  # prevent `ghcc.log` from writing to console, since we're using tqdm
+    file_count = 0
+    skipped_count = 0
     pool = ghcc.utils.Pool(processes=args.n_procs)
-    for result in pool.imap_unordered(functools.partial(decompile, env=env), progress):
-        file_count += 1
-        if result is None:
-            continue  # exception raised
-        if result.status is DecompilationStatus.Success:
-            assert result.time is not None
-            status_msg, color = f"[OK {result.time.total_seconds():5.2f}s]", "green"
-        elif result.status is DecompilationStatus.TimedOut:
-            status_msg, color = "[TIMED OUT]", "yellow"
-        else:  # DecompilationStatus.NoVariables
-            status_msg, color = "[NO VARS]", "yellow"
-        message = f"{file_count}: {result.original_path} ({result.binary_path})"
-        progress.write(f"{colored(status_msg, color)} {message}")
-        ghcc.log(f"{status_msg} {message}", "info")  # only writes to log file
+    decompile_fn = functools.partial(
+        decompile, output_dir=args.output_dir, binary_dir=args.binaries_dir, timeout=args.timeout)
+    for result in pool.imap_unordered(decompile_fn, binaries.values()):
+        result: DecompilationResult
+        if result.status is DecompilationStatus.Exists:
+            skipped_count += 1
+        else:
+            if skipped_count > 0:
+                ghcc.log(f"Skipped {skipped_count} binaries that have already been processed", force_console=True)
+                skipped_count = 0
+            file_count += 1
+            if file_count % 100 == 0:
+                ghcc.log(f"Processed {file_count} binaries", force_console=True)
     pool.close()
 
 
