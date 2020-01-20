@@ -3,9 +3,8 @@
 # names into that decompilation output.
 # This generates an aligned, parallel corpus for training translation models.
 
-# Requires Python 3
-
 import base64
+import contextlib
 import datetime
 import errno
 import functools
@@ -16,7 +15,7 @@ import tempfile
 import traceback
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import Dict, Iterator, NamedTuple, Optional, Tuple
 
 import tqdm
 
@@ -95,7 +94,6 @@ def run_decompiler(file_name: str, script: str, env: Optional[EnvDict] = None,
 
 
 class DecompilationStatus(Enum):
-    Exists = auto()
     Success = auto()
     TimedOut = auto()
     NoVariables = auto()
@@ -103,6 +101,7 @@ class DecompilationStatus(Enum):
 
 
 class DecompilationResult(NamedTuple):
+    hash: str
     binary_path: str
     original_path: str
     status: DecompilationStatus
@@ -127,15 +126,15 @@ def exception_handler(e, *args, _return: bool = True, **kwargs):
 def decompile(paths: Tuple[str, str], output_dir: str, binary_dir: str,
               timeout: Optional[int] = None) -> DecompilationResult:
     binary_path, original_path = paths
+    binary_hash = os.path.split(binary_path)[1]
 
     def create_result(status: DecompilationStatus, time: Optional[datetime.timedelta] = None) -> DecompilationResult:
-        return DecompilationResult(binary_path, original_path, status, time)
+        return DecompilationResult(binary_hash, binary_path, original_path, status, time)
 
-    binary_hash = os.path.split(binary_path)[1]
     output_path = os.path.join(output_dir, f"{binary_hash}.jsonl")
     if os.path.exists(output_path):
-        # Binary already decompiled.
-        return create_result(DecompilationStatus.Exists)
+        # Binary already decompiled, but for some reason it wasn't written to the DB.
+        return create_result(DecompilationStatus.Success)
 
     start = datetime.datetime.now()
     env: EnvDict = os.environ.copy()
@@ -180,6 +179,19 @@ def decompile(paths: Tuple[str, str], output_dir: str, binary_dir: str,
     return create_result(DecompilationStatus.Success, duration)
 
 
+def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, Tuple[str, str]]) -> Iterator[Tuple[str, str]]:
+    binary_entries = set(entry["sha"] for entry in db.collection.find())  # getting stuff in batch is much faster
+    skipped_count = 0
+    for sha, paths in binaries.items():
+        if sha in binary_entries:
+            skipped_count += 1
+            continue
+        if skipped_count > 0:
+            ghcc.log(f"Skipped {skipped_count} binaries that have been processed", force_console=True)
+            skipped_count = 0
+        yield paths
+
+
 def main():
     if args.n_procs == 0:
         # Only do this on the single-threaded case.
@@ -197,44 +209,56 @@ def main():
     write_pseudo_registry()
 
     # Obtain a list of all binaries
-    db = ghcc.RepoDB()
-    all_repos = db.collection.find()
     binaries: Dict[str, Tuple[str, str]] = {}  # sha -> (path_to_bin, orig_path_in_repo)
     if args.binary_mapping_cache_file is not None and os.path.exists(args.binary_mapping_cache_file):
         with open(args.binary_mapping_cache_file, "rb") as f:
             binaries = pickle.load(f)
         ghcc.log(f"Binary mapping cache loaded from '{args.binary_mapping_cache_file}'")
     else:
-        for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
-            prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
-            for makefile in repo['makefiles']:
-                directory = f"{prefix}/" + makefile['directory'][len("/usr/src/repo/"):]
-                for path, sha in zip(makefile['binaries'], makefile['sha256']):
-                    binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
+        with contextlib.closing(ghcc.RepoDB()) as repo_db:
+            all_repos = repo_db.collection.find()
+            for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
+                prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
+                for makefile in repo['makefiles']:
+                    directory = f"{prefix}/" + makefile['directory'][len("/usr/src/repo/"):]
+                    for path, sha in zip(makefile['binaries'], makefile['sha256']):
+                        binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
         if args.binary_mapping_cache_file is not None:
             with open(args.binary_mapping_cache_file, "wb") as f:
                 pickle.dump(binaries, f)
             ghcc.log(f"Binary mapping cache saved to '{args.binary_mapping_cache_file}'")
 
     ghcc.log(f"{len(binaries)} binaries to process.")
-    # ghcc.set_logging_level("error", file=False)  # prevent `ghcc.log` from writing to console, since we're using tqdm
     file_count = 0
-    skipped_count = 0
     pool = ghcc.utils.Pool(processes=args.n_procs)
-    decompile_fn = functools.partial(
-        decompile, output_dir=args.output_dir, binary_dir=args.binaries_dir, timeout=args.timeout)
-    for result in pool.imap_unordered(decompile_fn, binaries.values()):
-        result: DecompilationResult
-        if result.status is DecompilationStatus.Exists:
-            skipped_count += 1
-        else:
-            if skipped_count > 0:
-                ghcc.log(f"Skipped {skipped_count} binaries that have already been processed", force_console=True)
-                skipped_count = 0
+    db = ghcc.BinaryDB()
+
+    try:
+        decompile_fn = functools.partial(
+            decompile, output_dir=args.output_dir, binary_dir=args.binaries_dir, timeout=args.timeout)
+        for result in pool.imap_unordered(decompile_fn, iter_binaries(db, binaries)):
+            result: DecompilationResult
             file_count += 1
+            if result is not None:
+                db.add_binary(result.hash, result.status is DecompilationStatus.Success)
             if file_count % 100 == 0:
                 ghcc.log(f"Processed {file_count} binaries", force_console=True)
-    pool.close()
+    except KeyboardInterrupt:
+        print("Press Ctrl-C again to force terminate...")
+    except BlockingIOError as e:
+        print(traceback.format_exc())
+        pool.close()
+        pool.terminate()
+    except Exception as e:
+        print(traceback.format_exc())
+    finally:
+        ghcc.log("Gracefully shutting down...", "warning", force_console=True)
+        db.close()
+        if pool.processes > 0:
+            pool.close()
+            pool.terminate()
+            ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
+
 
 
 if __name__ == '__main__':
