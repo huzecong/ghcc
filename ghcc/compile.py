@@ -7,7 +7,7 @@ from enum import Enum, auto
 from typing import Dict, Iterator, List, NamedTuple, Optional
 
 import ghcc
-from ghcc.database import RepoMakefileEntry
+from ghcc.database import RepoDB
 from ghcc.repo import clean
 from ghcc.utils.docker import run_docker_command
 from ghcc.utils.run import run_command
@@ -224,7 +224,7 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
 def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[str],
                      compile_timeout: Optional[float] = None, record_libraries: bool = False,
                      gcc_override_flags: Optional[str] = None,
-                     compile_fn=docker_make) -> Iterator[RepoMakefileEntry]:
+                     compile_fn=docker_make) -> Iterator[RepoDB.MakefileEntry]:
     r"""Compile all Makefiles as provided, and move generated binaries to the binary directory.
 
     :param repo_binary_dir: Path to the directory where generated binaries for the repository will be stored.

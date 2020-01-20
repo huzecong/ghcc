@@ -18,8 +18,9 @@ from typing import Callable, Iterator, List, NamedTuple, Optional, Set
 from mypy_extensions import TypedDict
 
 import ghcc
-from ghcc import CloneErrorType, RepoMakefileEntry
 from ghcc.arguments import Choices, Switch
+from ghcc.database import RepoDB
+from ghcc.repo import CloneErrorType
 
 
 class Arguments(ghcc.arguments.Arguments):
@@ -49,7 +50,7 @@ class RepoInfo(NamedTuple):
     idx: int  # `tuple` has an `index` method
     repo_owner: str
     repo_name: str
-    db_result: Optional[ghcc.RepoEntry]
+    db_result: Optional[RepoDB.Entry]
 
 
 class PipelineMetaInfo(TypedDict):
@@ -63,7 +64,7 @@ class PipelineResult(NamedTuple):
     repo_info: RepoInfo
     clone_success: Optional[bool] = None
     repo_size: Optional[int] = None
-    makefiles: Optional[List[RepoMakefileEntry]] = None
+    makefiles: Optional[List[RepoDB.MakefileEntry]] = None
     libraries: Optional[List[str]] = None
     meta_info: Optional[PipelineMetaInfo] = None
 
@@ -84,7 +85,7 @@ def contains_in_file(file_path: str, text: str) -> bool:
 
 def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: str,
                           compile_timeout: Optional[float], record_libraries: bool = False,
-                          gcc_override_flags: Optional[str] = None) -> List[RepoMakefileEntry]:
+                          gcc_override_flags: Optional[str] = None) -> List[RepoDB.MakefileEntry]:
     start_time = time.time()
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
@@ -109,7 +110,7 @@ def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: 
             raise e
 
     log_path = os.path.join(repo_binary_dir, "log.pkl")
-    makefiles: List[RepoMakefileEntry] = []
+    makefiles: List[RepoDB.MakefileEntry] = []
     if os.path.exists(log_path):
         try:
             with open(log_path, "rb") as f:
@@ -335,7 +336,7 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                           makefiles=makefiles, libraries=libraries, meta_info=meta_info)
 
 
-def iter_repos(db: ghcc.Database, repo_list_path: str, max_count: Optional[int] = None) -> Iterator[RepoInfo]:
+def iter_repos(db: ghcc.RepoDB, repo_list_path: str, max_count: Optional[int] = None) -> Iterator[RepoInfo]:
     db_entries = {
         (entry["repo_owner"], entry["repo_name"]): entry
         for entry in db.collection.find()  # getting stuff in batch is much faster
@@ -437,7 +438,7 @@ def main() -> None:
 
     ghcc.log("Crawling starts...", "warning", force_console=True)
     pool = ghcc.utils.Pool(processes=args.n_procs)
-    db = ghcc.Database()
+    db = ghcc.RepoDB()
     libraries: Set[str] = set()
     if args.record_libraries is not None and os.path.exists(args.record_libraries):
         with open(args.record_libraries, "r") as f:

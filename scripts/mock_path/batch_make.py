@@ -29,7 +29,7 @@ def worker(q: multiprocessing.Queue):
         q.put(makefile)
 
 
-def read_queue(makefiles: List[ghcc.RepoMakefileEntry], q: 'multiprocessing.Queue[ghcc.RepoMakefileEntry]'):
+def read_queue(makefiles: List[ghcc.RepoDB.MakefileEntry], q: 'multiprocessing.Queue[ghcc.RepoDB.MakefileEntry]'):
     try:
         while not q.empty():
             makefiles.append(q.get())
@@ -43,7 +43,7 @@ def main():
     process.start()
     start_time = time.time()
 
-    makefiles: List[ghcc.RepoMakefileEntry] = []
+    makefiles: List[ghcc.RepoDB.MakefileEntry] = []
     while process.is_alive():
         time.sleep(2)  # no rush
         cur_time = time.time()

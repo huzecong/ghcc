@@ -3,7 +3,6 @@
   "port": 27017,
   "auth_db_name": "auth_db",
   "db_name": "my_db",
-  "collection_name": "repos",
   "username": "username",
   "password": "password"
 }

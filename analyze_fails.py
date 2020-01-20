@@ -87,7 +87,7 @@ def main():
 
     # Write repository information into a CSV file.
     # Each line is a separate Makefile.
-    db = ghcc.Database()
+    db = ghcc.RepoDB()
     with open("repo_samples.csv", "w") as f:
         writer = csv.writer(f)
         writer.writerow(["Repo", "Makefile", "Status", "Failed Reason?"])
