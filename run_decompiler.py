@@ -230,10 +230,9 @@ def main():
 
     ghcc.log(f"{len(binaries)} binaries to process.")
     file_count = 0
-    pool = ghcc.utils.Pool(processes=args.n_procs)
     db = ghcc.BinaryDB()
 
-    try:
+    with ghcc.utils.safe_pool(args.n_procs, closing=[db]) as pool:
         decompile_fn = functools.partial(
             decompile, output_dir=args.output_dir, binary_dir=args.binaries_dir, timeout=args.timeout)
         for result in pool.imap_unordered(decompile_fn, iter_binaries(db, binaries)):
@@ -243,22 +242,6 @@ def main():
                 db.add_binary(result.hash, result.status is DecompilationStatus.Success)
             if file_count % 100 == 0:
                 ghcc.log(f"Processed {file_count} binaries", force_console=True)
-    except KeyboardInterrupt:
-        print("Press Ctrl-C again to force terminate...")
-    except BlockingIOError as e:
-        print(traceback.format_exc())
-        pool.close()
-        pool.terminate()
-    except Exception as e:
-        print(traceback.format_exc())
-    finally:
-        ghcc.log("Gracefully shutting down...", "warning", force_console=True)
-        db.close()
-        if pool.processes > 0:
-            pool.close()
-            pool.terminate()
-            ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
-
 
 
 if __name__ == '__main__':

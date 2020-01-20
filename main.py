@@ -437,14 +437,18 @@ def main() -> None:
                                       directory_mapping={args.clone_folder: "/usr/src"})
 
     ghcc.log("Crawling starts...", "warning", force_console=True)
-    pool = ghcc.utils.Pool(processes=args.n_procs)
     db = ghcc.RepoDB()
     libraries: Set[str] = set()
     if args.record_libraries is not None and os.path.exists(args.record_libraries):
         with open(args.record_libraries, "r") as f:
             libraries = set(f.read().split())
 
-    try:
+    def flush_libraries():
+        if args.record_libraries is not None:
+            with open(args.record_libraries, "w") as f:
+                f.write("\n".join(libraries))
+
+    with ghcc.utils.safe_pool(args.n_procs, closing=[db, flush_libraries]) as pool:
         iterator = iter_repos(db, args.repo_list_file, args.max_repos)
         pipeline_fn: Callable[[RepoInfo], Optional[PipelineMetaInfo]] = functools.partial(
             clone_and_compile,
@@ -482,9 +486,7 @@ def main() -> None:
             if result.libraries is not None:
                 libraries.update(result.libraries)
                 if repo_count % 10 == 0:  # flush every 10 repos
-                    assert args.record_libraries is not None
-                    with open(args.record_libraries, "w") as f:
-                        f.write("\n".join(libraries))
+                    flush_libraries()
 
             if args.record_metainfo:
                 meta_info.add_repo(result)
@@ -492,27 +494,6 @@ def main() -> None:
                     ghcc.log(repr(meta_info), force_console=True)
 
         ghcc.log(repr(meta_info), force_console=True)
-
-    except KeyboardInterrupt:
-        print("Press Ctrl-C again to force terminate...")
-    except BlockingIOError as e:
-        print(traceback.format_exc())
-        pool.close()
-        pool.terminate()
-    except Exception as e:
-        print(traceback.format_exc())
-    finally:
-        ghcc.log("Gracefully shutting down...", "warning", force_console=True)
-        if args.record_libraries is not None:
-            with open(args.record_libraries, "w") as f:
-                f.write("\n".join(libraries))
-        if args.n_procs > 0:
-            pool.close()
-            # try:
-            #     pool.join()
-            # except KeyboardInterrupt:
-            pool.terminate()
-            ghcc.utils.kill_proc_tree(os.getpid())  # commit suicide
 
 
 if __name__ == '__main__':

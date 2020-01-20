@@ -2,7 +2,6 @@ import subprocess
 import tempfile
 from typing import Dict, List, NamedTuple, Optional, Union
 
-import psutil
 import tenacity
 
 from ghcc.logging import log
@@ -11,7 +10,6 @@ __all__ = [
     "CommandResult",
     "error_wrapper",
     "run_command",
-    "kill_proc_tree",
 ]
 
 
@@ -61,6 +59,7 @@ def error_wrapper(err: Exception) -> Exception:
 
 MAX_OUTPUT_LENGTH = 8192
 
+
 # @tenacity.retry(retry=tenacity.retry_if_exception_type(OSError), reraise=True,
 #                 stop=tenacity.stop_after_attempt(6),  # retry 5 times
 #                 wait=tenacity.wait_random_exponential(multiplier=2, max=60),
@@ -103,16 +102,3 @@ def run_command(args: Union[str, List[str]], *,
             f.seek(0)
             return CommandResult(args, ret.returncode, f.read())
     return CommandResult(args, ret.returncode, None)
-
-
-def kill_proc_tree(pid: int, including_parent: bool = True) -> None:
-    r"""Kill entire process tree.
-    """
-    parent = psutil.Process(pid)
-    children = parent.children(recursive=True)
-    for child in children:
-        child.kill()
-    gone, still_alive = psutil.wait_procs(children, timeout=5)
-    if including_parent:
-        parent.kill()
-        parent.wait(5)
