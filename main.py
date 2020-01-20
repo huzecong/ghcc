@@ -12,7 +12,6 @@ import pickle
 import shutil
 import subprocess
 import time
-import traceback
 from typing import Callable, Iterator, List, NamedTuple, Optional, Set
 
 from mypy_extensions import TypedDict
@@ -123,19 +122,10 @@ def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: 
 
 def exception_handler(e, *args, _return: bool = True, **kwargs):
     repo_info: RepoInfo = args[0] if len(args) > 0 else kwargs["repo_info"]
-    exc_msg = f"<{e.__class__.__qualname__}> {e}"
-    try:
-        if not (isinstance(e, subprocess.CalledProcessError) and e.output is not None):
-            ghcc.log(traceback.format_exc(), "error")
-
-        ghcc.log(f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}: {exc_msg}", "error")
-        if _return:
-            # mark it as "failed to clone" so we don't deal with it anymore
-            return PipelineResult(repo_info, clone_success=False)
-    except Exception as log_e:
-        print(f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}: {exc_msg}")
-        print(f"Another exception occurred while logging: <{log_e.__class__.__qualname__}> {log_e}")
-        raise log_e
+    ghcc.utils.log_exception(e, f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}")
+    if _return:
+        # mark it as "failed to clone" so we don't deal with it anymore
+        return PipelineResult(repo_info, clone_success=False)
 
 
 @ghcc.utils.exception_wrapper(exception_handler)

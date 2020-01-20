@@ -108,18 +108,9 @@ class DecompilationResult(NamedTuple):
     time: Optional[datetime.timedelta] = None
 
 
-def exception_handler(e, *args, _return: bool = True, **kwargs):
+def exception_handler(e, *args, **kwargs):
     binary_path, _ = args[0] if len(args) > 0 else kwargs["binary_path"]
-    exc_msg = f"<{e.__class__.__qualname__}> {e}"
-    try:
-        if not (isinstance(e, subprocess.CalledProcessError) and e.output is not None):
-            ghcc.log(traceback.format_exc(), "error")
-
-        ghcc.log(f"Exception occurred when processing {binary_path}: {exc_msg}", "error")
-    except Exception as log_e:
-        print(f"Exception occurred when processing {binary_path}: {exc_msg}")
-        print(f"Another exception occurred while logging: <{log_e.__class__.__qualname__}> {log_e}")
-        raise log_e
+    ghcc.utils.log_exception(e, f"Exception occurred when processing {binary_path}")
 
 
 @ghcc.utils.exception_wrapper(exception_handler)
