@@ -120,8 +120,7 @@ def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: 
     return makefiles
 
 
-def exception_handler(e, *args, _return: bool = True, **kwargs):
-    repo_info: RepoInfo = args[0] if len(args) > 0 else kwargs["repo_info"]
+def exception_handler(e, repo_info: RepoInfo, _return: bool = True):
     ghcc.utils.log_exception(e, f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}")
     if _return:
         # mark it as "failed to clone" so we don't deal with it anymore

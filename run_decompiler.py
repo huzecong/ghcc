@@ -108,8 +108,8 @@ class DecompilationResult(NamedTuple):
     time: Optional[datetime.timedelta] = None
 
 
-def exception_handler(e, *args, **kwargs):
-    binary_path, _ = args[0] if len(args) > 0 else kwargs["binary_path"]
+def exception_handler(e, paths: Tuple[str, str]):
+    binary_path, _ = paths
     ghcc.utils.log_exception(e, f"Exception occurred when processing {binary_path}")
 
 
