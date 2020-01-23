@@ -1,6 +1,6 @@
 from .compile import *
 from .database import *
-from .logging import *
+from .log import *
 from .repo import *
 from . import arguments
 from . import utils

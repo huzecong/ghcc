@@ -4,11 +4,11 @@ import os
 import threading
 import traceback
 import types
-from typing import Any, List, Optional, TextIO, Union, ContextManager, Iterator
+from typing import Any, Iterator, List, Optional, TextIO, Union
 
 import psutil
 
-from ghcc.logging import log
+from ghcc.log import log
 
 __all__ = [
     "safe_pool",
@@ -40,10 +40,9 @@ class Pool:
 PoolType = Union[Pool, multiprocessing.pool.Pool]
 
 
-# Here we disable type checking because IDEs are unable to understand the `contextmanager` decorator.
-@contextlib.contextmanager  # type: ignore
+@contextlib.contextmanager
 def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwargs) \
-        -> ContextManager[multiprocessing.pool.Pool]:
+        -> Iterator[multiprocessing.pool.Pool]:
     r"""A wrapper over ``multiprocessing.Pool`` that gracefully handles exceptions.
 
     :param processes: The number of worker processes to run. A value of 0 means single threaded execution.
@@ -60,7 +59,7 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
 
     pool = Pool(processes, *args, **kwargs)
     try:
-        yield pool
+        yield pool  # type: ignore
     except KeyboardInterrupt:
         print("Press Ctrl-C again to force terminate...")
     except BlockingIOError as e:

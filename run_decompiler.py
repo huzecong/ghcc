@@ -183,6 +183,28 @@ def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, Tuple[str, str]]) -> It
         yield paths
 
 
+def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, Tuple[str, str]]:
+    binaries: Dict[str, Tuple[str, str]] = {}  # sha -> (path_to_bin, orig_path_in_repo)
+    if cache_path is not None and os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            binaries = pickle.load(f)
+        ghcc.log(f"Binary mapping cache loaded from '{cache_path}'")
+    else:
+        with contextlib.closing(ghcc.RepoDB()) as repo_db:
+            all_repos = repo_db.collection.find()
+            for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
+                prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
+                for makefile in repo['makefiles']:
+                    directory = f"{prefix}/" + makefile['directory'][len("/usr/src/repo/"):]
+                    for path, sha in zip(makefile['binaries'], makefile['sha256']):
+                        binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
+        if cache_path is not None:
+            with open(cache_path, "wb") as f:
+                pickle.dump(binaries, f)
+            ghcc.log(f"Binary mapping cache saved to '{cache_path}'")
+    return binaries
+
+
 def main():
     if args.n_procs == 0:
         # Only do this on the single-threaded case.
@@ -200,24 +222,7 @@ def main():
     write_pseudo_registry()
 
     # Obtain a list of all binaries
-    binaries: Dict[str, Tuple[str, str]] = {}  # sha -> (path_to_bin, orig_path_in_repo)
-    if args.binary_mapping_cache_file is not None and os.path.exists(args.binary_mapping_cache_file):
-        with open(args.binary_mapping_cache_file, "rb") as f:
-            binaries = pickle.load(f)
-        ghcc.log(f"Binary mapping cache loaded from '{args.binary_mapping_cache_file}'")
-    else:
-        with contextlib.closing(ghcc.RepoDB()) as repo_db:
-            all_repos = repo_db.collection.find()
-            for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
-                prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
-                for makefile in repo['makefiles']:
-                    directory = f"{prefix}/" + makefile['directory'][len("/usr/src/repo/"):]
-                    for path, sha in zip(makefile['binaries'], makefile['sha256']):
-                        binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
-        if args.binary_mapping_cache_file is not None:
-            with open(args.binary_mapping_cache_file, "wb") as f:
-                pickle.dump(binaries, f)
-            ghcc.log(f"Binary mapping cache saved to '{args.binary_mapping_cache_file}'")
+    binaries = get_binary_mapping(args.binary_mapping_cache_file)
 
     ghcc.log(f"{len(binaries)} binaries to process.")
     file_count = 0

@@ -5,7 +5,6 @@ import unittest
 from typing import List
 
 import ghcc
-from main import _docker_batch_compile
 
 
 class CompileTest(unittest.TestCase):
@@ -27,6 +26,7 @@ class CompileTest(unittest.TestCase):
             "obj/filter_image.o",
             "obj/flow_image.o",
             "obj/harris_image.o",
+            "obj/image_opencv.o",
             "obj/list.o",
             "obj/load_image.o",
             "obj/main.o",
@@ -62,15 +62,18 @@ class CompileTest(unittest.TestCase):
         self._test_debug_info(elf_paths)
 
     def test_compile(self):
+        # NOTE: This doesn't work under macOS.
         self._test_compile(ghcc.unsafe_make)
 
     def test_docker_compile(self):
+        ghcc.utils.verify_docker_image()
         self._test_compile(ghcc.docker_make)
 
     def test_docker_batch_compile(self):
+        ghcc.utils.verify_docker_image()
         binary_dir = os.path.join(self.tempdir.name, "_bin")
         os.makedirs(binary_dir)
-        result = _docker_batch_compile(0, binary_dir, self.directory, 20, record_libraries=True)
+        result = ghcc.docker_batch_compile(binary_dir, self.directory, 20, record_libraries=True, user_id=0)
         assert len(result) == 1
         assert set(self.target_elfs) == set(result[0]["binaries"])
 
@@ -81,8 +84,8 @@ class CompileTest(unittest.TestCase):
         from ghcc.compile import MOCK_PATH
         library_log_path = os.path.join(self.tempdir.name, "libraries.txt")
         env = {
-            b"PATH": f"{MOCK_PATH}:{os.environ['PATH']}".encode('utf-8'),
-            b"MOCK_GCC_LIBRARY_LOG": library_log_path.encode('utf-8'),
+            "PATH": f"{MOCK_PATH}:{os.environ['PATH']}",
+            "MOCK_GCC_LIBRARY_LOG": library_log_path,
         }
         libraries = ["pthread", "m", "opencv", "openmp", "library_with_random_name"]
         try:

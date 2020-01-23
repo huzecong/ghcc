@@ -8,10 +8,8 @@ r"""Run the cloning--compilation pipeline. What happens is:
 
 import functools
 import os
-import pickle
 import shutil
 import subprocess
-import time
 from typing import Callable, Iterator, List, NamedTuple, Optional, Set
 
 from mypy_extensions import TypedDict
@@ -80,44 +78,6 @@ def contains_in_file(file_path: str, text: str) -> bool:
     with open(file_path, 'r') as f:
         line = f.readline()
     return text in line
-
-
-def _docker_batch_compile(repo_info: RepoInfo, repo_binary_dir: str, repo_path: str,
-                          compile_timeout: Optional[float], record_libraries: bool = False,
-                          gcc_override_flags: Optional[str] = None) -> List[RepoDB.MakefileEntry]:
-    start_time = time.time()
-    try:
-        # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
-        # get the results file if any compilation task timeouts.
-        ret = ghcc.utils.run_docker_command([
-            "batch_make.py",
-            *(["--record-libraries"] if record_libraries else []),
-            *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else []),
-            *(["--gcc-override-flags", f'"{gcc_override_flags}"'] if gcc_override_flags is not None else [])],
-            user=(repo_info.idx % 10000) + 30000,  # user IDs 30000 ~ 39999
-            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"}, return_output=True)
-    except subprocess.CalledProcessError as e:
-        end_time = time.time()
-        if ((compile_timeout is not None and end_time - start_time > compile_timeout) or
-                b"Resource temporarily unavailable" in e.output):
-            # Usually exceptions at this stage are due to some badly written Makefiles that gets trapped in an infinite
-            # recursion. We suppress the exception and proceed normally, so we won't have to deal with it again when
-            # the program is rerun.
-            exception_handler(e, repo_info, _return=False)
-        else:
-            # Otherwise, it might be because Docker broke down or something.
-            raise e
-
-    log_path = os.path.join(repo_binary_dir, "log.pkl")
-    makefiles: List[RepoDB.MakefileEntry] = []
-    if os.path.exists(log_path):
-        try:
-            with open(log_path, "rb") as f:
-                makefiles = pickle.load(f)
-        except Exception:
-            makefiles = []
-        os.remove(log_path)
-    return makefiles
 
 
 def exception_handler(e, repo_info: RepoInfo, _return: bool = True):
@@ -271,8 +231,10 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ghcc.log(f"Starting compilation for {repo_full_name}...")
 
         if docker_batch_compile:
-            makefiles = _docker_batch_compile(
-                repo_info, repo_binary_dir, repo_path, compile_timeout, record_libraries, gcc_override_flags)
+            makefiles = ghcc.docker_batch_compile(
+                repo_binary_dir, repo_path, compile_timeout, record_libraries, gcc_override_flags,
+                user_id=(repo_info.idx % 10000) + 30000,  # user IDs 30000 ~ 39999
+                exception_log_fn=functools.partial(exception_handler, repo_info=repo_info))
         else:
             makefiles = list(ghcc.compile_and_move(
                 repo_binary_dir, repo_path, makefile_dirs, compile_timeout, record_libraries, gcc_override_flags))
@@ -439,7 +401,7 @@ def main() -> None:
 
     with ghcc.utils.safe_pool(args.n_procs, closing=[db, flush_libraries]) as pool:
         iterator = iter_repos(db, args.repo_list_file, args.max_repos)
-        pipeline_fn: Callable[[RepoInfo], Optional[PipelineMetaInfo]] = functools.partial(
+        pipeline_fn: Callable[[RepoInfo], Optional[PipelineResult]] = functools.partial(
             clone_and_compile,
             clone_folder=args.clone_folder, binary_folder=args.binary_folder, archive_folder=args.archive_folder,
             recursive_clone=args.recursive_clone,

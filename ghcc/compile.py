@@ -1,10 +1,11 @@
 import hashlib
 import os
+import pickle
 import shutil
 import subprocess
 import time
 from enum import Enum, auto
-from typing import Dict, Iterator, List, NamedTuple, Optional
+from typing import Callable, Dict, Iterator, List, NamedTuple, Optional
 
 import ghcc
 from ghcc.database import RepoDB
@@ -24,6 +25,7 @@ __all__ = [
     "unsafe_make",
     "docker_make",
     "compile_and_move",
+    "docker_batch_compile",
 ]
 
 
@@ -190,13 +192,13 @@ def _docker_make(directory: str, timeout: Optional[float] = None, env: Optional[
     if os.path.isfile(os.path.join(directory, "configure")):
         # Try running `./configure` if it exists.
         run_docker_command("chmod +x configure && ./configure && make --keep-going -j1",
-                           cwd="/usr/src", directory_mapping={directory: "/usr/src"},
+                           user=0, cwd="/usr/src", directory_mapping={directory: "/usr/src"},
                            timeout=timeout, shell=True, env=env)
     else:
         # Make while ignoring errors.
         # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
         run_docker_command(["make", "--keep-going", "-j1"],
-                           cwd="/usr/src", directory_mapping={directory: "/usr/src"},
+                           user=0, cwd="/usr/src", directory_mapping={directory: "/usr/src"},
                            timeout=timeout, env=env)
 
 
@@ -272,3 +274,44 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
                 "sha256": sha256,
             }
     ghcc.clean(repo_path)
+
+
+def docker_batch_compile(repo_binary_dir: str, repo_path: str,
+                         compile_timeout: Optional[float], record_libraries: bool = False,
+                         gcc_override_flags: Optional[str] = None, user_id: Optional[int] = None,
+                         exception_log_fn: Optional[Callable[[Exception], None]] = None) \
+        -> List[RepoDB.MakefileEntry]:
+    start_time = time.time()
+    try:
+        # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
+        # get the results file if any compilation task timeouts.
+        ret = ghcc.utils.run_docker_command([
+            "batch_make.py",
+            *(["--record-libraries"] if record_libraries else []),
+            *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else []),
+            *(["--gcc-override-flags", f'"{gcc_override_flags}"'] if gcc_override_flags is not None else [])],
+            user=user_id, return_output=True,
+            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"})
+    except subprocess.CalledProcessError as e:
+        end_time = time.time()
+        if ((compile_timeout is not None and end_time - start_time > compile_timeout) or
+                b"Resource temporarily unavailable" in e.output):
+            # Usually exceptions at this stage are due to some badly written Makefiles that gets trapped in an infinite
+            # recursion. We suppress the exception and proceed normally, so we won't have to deal with it again when
+            # the program is rerun.
+            if exception_log_fn is not None:
+                exception_log_fn(e)
+        else:
+            # Otherwise, it might be because Docker broke down or something.
+            raise e
+
+    log_path = os.path.join(repo_binary_dir, "log.pkl")
+    makefiles: List[RepoDB.MakefileEntry] = []
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, "rb") as f:
+                makefiles = pickle.load(f)
+        except Exception:
+            makefiles = []
+        os.remove(log_path)
+    return makefiles

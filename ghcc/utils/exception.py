@@ -5,7 +5,7 @@ import sys
 import traceback
 from typing import Optional
 
-from ghcc.logging import log
+from ghcc.log import log
 
 __all__ = [
     "register_ipython_excepthook",
