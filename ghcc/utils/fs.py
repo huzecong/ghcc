@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import subprocess
 
@@ -10,13 +11,21 @@ __all__ = [
     "copy_tree",
 ]
 
+if platform.system() == "Darwin":
+    def get_folder_size(path: str) -> int:
+        r"""Get disk usage of given path in bytes.
 
-def get_folder_size(path: str) -> int:
-    r"""Get disk usage of given path in bytes.
+        Credit: https://stackoverflow.com/a/25574638/4909228
+        """
+        return int(subprocess.check_output(['du', '-s', path],
+                                           env={"BLOCKSIZE": "512"}).split()[0].decode('utf-8')) * 512
+else:
+    def get_folder_size(path: str) -> int:
+        r"""Get disk usage of given path in bytes.
 
-    Credit: https://stackoverflow.com/a/25574638/4909228
-    """
-    return int(subprocess.check_output(['du', '-bs', path]).split()[0].decode('utf-8'))
+        Credit: https://stackoverflow.com/a/25574638/4909228
+        """
+        return int(subprocess.check_output(['du', '-bs', path]).split()[0].decode('utf-8'))
 
 
 def readable_size(size: float) -> str:

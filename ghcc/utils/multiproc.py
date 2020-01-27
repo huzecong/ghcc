@@ -8,7 +8,7 @@ from typing import Any, Iterator, List, Optional, TextIO, Union
 
 import psutil
 
-from ghcc.log import log
+from ..log import log
 
 __all__ = [
     "safe_pool",

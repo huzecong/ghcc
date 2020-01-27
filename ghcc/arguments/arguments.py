@@ -2,7 +2,7 @@ import argparse
 import functools
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
-from ghcc.arguments.custom_types import Switch, is_choices, is_optional, unwrap_optional
+from .custom_types import Switch, is_choices, is_optional, unwrap_optional
 
 __all__ = [
     "ArgumentParser",
@@ -159,5 +159,12 @@ class Arguments:
                 if has_default:
                     parser_kwargs["default"] = default_val
                 parser.add_argument(parser_arg_name, **parser_kwargs)
+
+        if cls.__module__ != "__main__":
+            # Usually arguments are defined in the same script that is directly run (__main__).
+            # If this is not the case, add a note in help message indicating where the arguments are defined.
+            usage = parser.format_usage()
+            usage += f"\nNote: Arguments defined in {cls.__module__}.{cls.__name__}"
+            parser.usage = usage
 
         return parser.parse_args(args, namespace)

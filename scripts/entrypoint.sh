@@ -18,8 +18,13 @@ else
   GROUP_ID=${LOCAL_GROUP_ID}
 
   echo "Starting with UID: $USER_ID, GID: $GROUP_ID"
-  groupadd -g "$GROUP_ID" host
-  useradd --shell /bin/bash -u "$USER_ID" -g host -o -c "" -m user
+  GROUP_NAME=$(getent group "$GROUP_ID" | cut -d: -f1)
+  if [[ -z "${GROUP_NAME}" ]]; then
+    # The group doesn't exist; create a new one.
+    groupadd -g "$GROUP_ID" host
+    GROUP_NAME="host"
+  fi
+  useradd --shell /bin/bash -u "$USER_ID" -g "$GROUP_NAME" -o -c "" -m user
   export HOME=/home/user
   chown -R user /usr/src/
   __setup_bashrc

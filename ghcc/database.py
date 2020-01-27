@@ -19,9 +19,6 @@ class BaseEntry(TypedDict, total=False):
     """
     _id: Any  # actually `bson.ObjectId`, but we don't care
 
-    def __getattr__(self, item):
-        return self.__getitem__(item)
-
 
 class Database(abc.ABC):
     r"""A wrapper over MongoDB that handles the connection and authentication. This is an abstract base class, concrete
@@ -235,7 +232,7 @@ class BinaryDB(Database):
 if __name__ == '__main__':
     db = RepoDB()
     if len(sys.argv) > 1 and sys.argv[1] == "clear":
-        confirm = input("This will drop the entire database. Confirm? [y/N] ")
+        confirm = input("This will drop the entire repository database. Confirm? [y/N] ")
         if confirm.lower() in ["y", "yes"]:
             db.collection.delete_many({})
             db.close()

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import argparse
 import functools
 import multiprocessing as mp
 import os
@@ -8,12 +7,17 @@ import time
 from typing import Dict, List, Optional
 
 import ghcc
+from ghcc.arguments import Switch
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--compile-timeout", type=int, default=900)  # wait up to 15 minutes
-parser.add_argument("--record-libraries", action="store_true", default=False)
-parser.add_argument("--gcc-override-flags", type=str, default=None)
-args = parser.parse_args()
+
+class Arguments(ghcc.arguments.Arguments):
+    compile_timeout: int = 900  # wait up to 15 minutes
+    record_libraries: Switch = False
+    gcc_override_flags: Optional[str] = None
+    use_makefile_info_pkl: Switch = False
+
+
+args = Arguments()
 
 TIMEOUT_TOLERANCE = 5  # allow worker process to run for maximum 5 seconds beyond timeout
 REPO_PATH = "/usr/src/repo"
@@ -21,14 +25,33 @@ BINARY_PATH = "/usr/src/bin"
 
 
 def worker(q: mp.Queue):
-    makefile_dirs = ghcc.find_makefiles(REPO_PATH)
+    if args.use_makefile_info_pkl:
+        # Use information from previous compilations.
+        # This is used when matching decompiled functions to original code.
+        makefile_info: Dict[str, Dict[str, str]] = {}  # make_dir -> (binary_path -> binary_sha256)
+        with open(os.path.join(BINARY_PATH, "makefiles.pkl"), "rb") as f:
+            makefile_info = pickle.load(f)
+
+        def check_file_fn(directory: str, file: str) -> bool:
+            return file in makefile_info[directory]
+
+        def hash_fn(directory: str, path: str) -> str:
+            return makefile_info[directory][path]
+
+        compile_fn = functools.partial(
+            ghcc.compile._make_skeleton, make_fn=ghcc.unsafe_make, check_file_fn=check_file_fn)
+        makefile_dirs = list(makefile_info.keys())
+        kwargs = {"compile_fn": compile_fn, "hash_fn": hash_fn}
+    else:
+        makefile_dirs = ghcc.find_makefiles(REPO_PATH)
+        kwargs = {"compile_fn": ghcc.unsafe_make}
 
     for makefile in ghcc.compile_and_move(
-            BINARY_PATH, REPO_PATH, makefile_dirs, compile_fn=ghcc.unsafe_make,
+            BINARY_PATH, REPO_PATH, makefile_dirs,
             compile_timeout=args.compile_timeout, record_libraries=args.record_libraries,
-            gcc_override_flags=args.gcc_override_flags):
+            gcc_override_flags=args.gcc_override_flags, **kwargs):
         # Modify makefile directory to use relative path.
-        makefile.directory = os.path.relpath(makefile.directory, REPO_PATH)
+        makefile['directory'] = os.path.relpath(makefile['directory'], REPO_PATH)
         q.put(makefile)
 
 

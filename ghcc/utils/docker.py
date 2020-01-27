@@ -4,7 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-from ghcc.utils.run import CommandResult, error_wrapper, run_command
+from .run import CommandResult, error_wrapper, run_command
 
 __all__ = [
     "run_docker_command",

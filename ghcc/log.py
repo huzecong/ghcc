@@ -9,7 +9,7 @@ from termcolor import colored
 from typing import List
 
 __all__ = [
-    "get_levels",
+    "get_logging_levels",
     "set_log_file",
     "log",
     "set_logging_level",
@@ -114,7 +114,7 @@ manager = multiprocessing.Manager()
 _CONSOLE_LOGGING_LEVEL = manager.Value('i', LEVEL_MAP["info"])
 
 
-def get_levels() -> List[str]:
+def get_logging_levels() -> List[str]:
     return list(LEVEL_MAP.keys())
 
 

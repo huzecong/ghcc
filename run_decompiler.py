@@ -33,10 +33,9 @@ class Arguments(ghcc.arguments.Arguments):
     n_procs: int = 0  # number of processes
 
 
-args = Arguments()
-scripts_dir = Path(__file__).parent / "scripts" / "decompiler_scripts"
-COLLECT = str((scripts_dir / 'collect.py').absolute())
-DUMP_TREES = str((scripts_dir / 'dump_trees.py').absolute())
+SCRIPTS_DIR = Path(__file__).parent / "scripts" / "decompiler_scripts"
+COLLECT = str((SCRIPTS_DIR / 'collect.py').absolute())
+DUMP_TREES = str((SCRIPTS_DIR / 'dump_trees.py').absolute())
 
 
 def make_directory(dir_path: str) -> None:
@@ -241,4 +240,5 @@ def main():
 
 
 if __name__ == '__main__':
+    args = Arguments()
     main()

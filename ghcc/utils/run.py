@@ -4,7 +4,7 @@ from typing import Dict, List, NamedTuple, Optional, Union
 
 import tenacity
 
-from ghcc.log import log
+from ..log import log
 
 __all__ = [
     "CommandResult",

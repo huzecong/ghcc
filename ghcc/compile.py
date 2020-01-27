@@ -7,11 +7,10 @@ import time
 from enum import Enum, auto
 from typing import Callable, Dict, Iterator, List, NamedTuple, Optional
 
-import ghcc
-from ghcc.database import RepoDB
-from ghcc.repo import clean
-from ghcc.utils.docker import run_docker_command
-from ghcc.utils.run import run_command
+from .database import RepoDB
+from .repo import clean
+from .utils.docker import run_docker_command
+from .utils.run import run_command
 
 MOCK_PATH = os.path.abspath(os.path.join(os.path.split(__file__)[0], "..", "..", "scripts", "mock_path"))
 
@@ -310,23 +309,40 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
                 "binaries": compile_result.elf_files,
                 "sha256": hashes,
             }
-    ghcc.clean(repo_path)
+    clean(repo_path)
 
 
 def docker_batch_compile(repo_binary_dir: str, repo_path: str,
-                         compile_timeout: Optional[float], record_libraries: bool = False,
-                         gcc_override_flags: Optional[str] = None, user_id: Optional[int] = None,
-                         exception_log_fn: Optional[Callable[[Exception], None]] = None) \
-        -> List[RepoDB.MakefileEntry]:
+                         compile_timeout: Optional[float] = None, record_libraries: bool = False,
+                         gcc_override_flags: Optional[str] = None,
+                         use_makefile_info_pkl: bool = False,
+                         user_id: Optional[int] = None, exception_log_fn=None) -> List[RepoDB.MakefileEntry]:
+    r"""Run batch compilation in Docker.
+
+    :param repo_binary_dir: Path to store collected binaries.
+    :param repo_path: Path to the code repository.
+    :param compile_timeout: Timeout for compilation.
+    :param record_libraries: If ``True``, libraries used during compilation are written under
+        ``repo_binary_dir/libraries.txt``.
+    :param gcc_override_flags: Additional flags to pass to GCC during compilation.
+    :param use_makefile_info_pkl: If ``True``, the caller must prepare a file named ``makefiles.pkl`` under
+        ``repo_binary_dir``, that contains a pickled object of type ``Dict[str, Dict[str, str]]``, that maps Makefile
+        directories to a mapping from binary paths to SHA256 hashes.
+    :param user_id: The user ID to use inside the Docker container. See :meth:`ghcc.utils.docker.run_docker_command`.
+    :param exception_log_fn: A function to log exceptions occurred in Docker. The function takes the exception object
+        as input and returns nothing.
+    :return: A list of Makefile entries.
+    """
     start_time = time.time()
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
         # get the results file if any compilation task timeouts.
-        ret = ghcc.utils.run_docker_command([
+        ret = run_docker_command([
             "batch_make.py",
             *(["--record-libraries"] if record_libraries else []),
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else []),
-            *(["--gcc-override-flags", f'"{gcc_override_flags}"'] if gcc_override_flags is not None else [])],
+            *(["--gcc-override-flags", f'"{gcc_override_flags}"'] if gcc_override_flags is not None else []),
+            *(["--use-makefile-info-pkl"] if use_makefile_info_pkl else [])],
             user=user_id, return_output=True,
             directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"})
     except subprocess.CalledProcessError as e:

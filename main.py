@@ -33,9 +33,9 @@ class Arguments(ghcc.arguments.Arguments):
     force_recompile: Switch = False
     docker_batch_compile: Switch = True
     compression_type: Choices["gzip", "xz"] = "gzip"
-    max_archive_size: int = 100 * 1024 * 1024  # only archive repos no larger than 100MB.
+    max_archive_size: Optional[int] = 100 * 1024 * 1024  # only archive repos no larger than 100MB.
     record_libraries: Optional[str] = None  # gather libraries used in Makefiles and print to the specified file
-    logging_level: Choices[ghcc.logging.get_levels()] = "info"
+    logging_level: Choices[ghcc.get_logging_levels()] = "info"
     max_repos: Optional[int] = None  # maximum number of repositories to process (ignoring non-existent)
     recursive_clone: Switch = True  # if True, use `--recursive` when `git clone`
     write_db: Switch = True  # only modify the DB when True
@@ -80,7 +80,7 @@ def contains_in_file(file_path: str, text: str) -> bool:
     return text in line
 
 
-def exception_handler(e, repo_info: RepoInfo, _return: bool = True):
+def exception_handler(e, repo_info: RepoInfo, _return: bool = False):
     ghcc.utils.log_exception(e, f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}")
     if _return:
         # mark it as "failed to clone" so we don't deal with it anymore
@@ -370,8 +370,9 @@ class MetaInfo:
 
 def main() -> None:
     if not ghcc.utils.verify_docker_image():
-        ghcc.log("ERROR: Your Docker image is out-of-date. Please rebuild the image by: `docker build -t gcc-custom .`",
-                 "error", force_console=True)
+        image_path = os.path.relpath(os.path.join(ghcc.__file__, "..", ".."), os.getcwd())
+        ghcc.log("ERROR: Your Docker image is out-of-date. Please rebuild the image by: "
+                 f"`docker build -t gcc-custom {image_path}`", "error", force_console=True)
         exit(1)
 
     args = Arguments()

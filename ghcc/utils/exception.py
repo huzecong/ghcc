@@ -5,7 +5,7 @@ import sys
 import traceback
 from typing import Optional
 
-from ghcc.log import log
+from ..log import log
 
 __all__ = [
     "register_ipython_excepthook",
@@ -100,6 +100,7 @@ def exception_wrapper(handler_fn=None):
             handler_args_with_defaults = set((handler_argspec.kwonlydefaults or {}).keys())
             if handler_argspec.defaults is not None:
                 handler_args_with_defaults |= set(handler_argspec.args[-len(handler_argspec.defaults):])
+            handler_arg_names -= handler_args_with_defaults
             inner_signature = inspect.signature(func)
             for name in handler_arg_names:
                 if name not in inner_signature.parameters:
