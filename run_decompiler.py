@@ -12,7 +12,6 @@ import os
 import pickle
 import subprocess
 import tempfile
-import traceback
 from enum import Enum, auto
 from pathlib import Path
 from typing import Dict, Iterator, NamedTuple, Optional, Tuple
@@ -195,7 +194,8 @@ def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, Tuple[str,
             for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
                 prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
                 for makefile in repo['makefiles']:
-                    directory = f"{prefix}/" + makefile['directory'][len("/usr/src/repo/"):]
+                    # Absolute Docker paths were used when compiling; remove them.
+                    directory = f"{prefix}/" + ghcc.utils.remove_prefix(makefile['directory'], "/usr/src/repo/")
                     for path, sha in zip(makefile['binaries'], makefile['sha256']):
                         binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
         if cache_path is not None:

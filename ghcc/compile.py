@@ -47,12 +47,10 @@ def find_makefiles(path: str) -> List[str]:
     r"""Find all subdirectories under the given directory that contains Makefiles.
 
     :param path: Path to the directory to scan.
-    :return: A list of subdirectories that contain Makefiles.
+    :return: A list of absolute paths to subdirectories that contain Makefiles.
     """
     directories = []
     for subdir, dirs, files in os.walk(path):
-        # if any(name.lower() == "makefile" for name in files):
-        # if contains_files(subdir, ["makefile", "configure.ac", "configure.in"]):
         if contains_files(subdir, ["makefile"]):
             directories.append(subdir)
     return directories
@@ -79,8 +77,35 @@ def _create_result(success: bool = False, elf_files: Optional[List[str]] = None,
     return CompileResult(success, elf_files=elf_files, error_type=error_type, captured_output=captured_output)
 
 
+def _check_elf_fn(directory: str, file: str) -> bool:
+    r"""Checks whether the specified file is a binary file.
+
+    :param directory: The directory containing the Makefile.
+    :param file: The path to the file to check, relative to the directory.
+    :return: If ``True``, the file is a binary (ELF) file.
+    """
+    path = os.path.join(directory, file)
+    output = subprocess.check_output(["file", path], timeout=10)
+    output = output[len(file):]  # first part is file name
+    return ELF_FILE_TAG in output
+
+
 def _make_skeleton(make_fn, directory: str, timeout: Optional[float] = None,
-                   env: Optional[Dict[str, str]] = None) -> CompileResult:
+                   env: Optional[Dict[str, str]] = None,
+                   check_file_fn: Callable[[str, str], bool] = _check_elf_fn) -> CompileResult:
+    r"""A composable routine for different compilation methods. Different routines can be composed by specifying
+    different ``make_fn``\ s and ``check_file_fn``\ s.
+
+    :param make_fn: The function to call for compilation. The function takes as input variables ``directory``,
+        ``timeout``, and ``env``.
+    :param directory: The directory containing the Makefile.
+    :param timeout: Maximum compilation time.
+    :param env: A dictionary of environment variables.
+    :param check_file_fn: A function to determine whether a generated file should be collected, i.e., whether it is a
+        binary file. The function takes as input variables ``directory`` and ``file``, where ``file`` is the path of the
+        file to check, relative to ``directory``. Defaults to :meth:`_check_elf_fn`, which checks whether the file is an
+        ELF file.
+    """
     directory = os.path.abspath(directory)
 
     try:
@@ -111,10 +136,7 @@ def _make_skeleton(make_fn, directory: str, timeout: Optional[float] = None,
 
         # Inspect each file and find ELF files.
         for file in diff_files:
-            path = os.path.join(directory, file)
-            output = subprocess.check_output(["file", path], timeout=10)
-            output = output[len(file):]  # first part is file name
-            if ELF_FILE_TAG in output:
+            if check_file_fn(directory, file):
                 result.elf_files.append(file)
     except subprocess.TimeoutExpired as e:
         return _create_result(elf_files=result.elf_files, error_type=CompileErrorType.Timeout, captured_output=e.output)
@@ -223,10 +245,24 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
     return _make_skeleton(_docker_make, directory, timeout, env)
 
 
+def _hash_file_sha256(directory: str, path: str) -> str:
+    r"""Generate the SHA256 hash signature of the file located at the specified path.
+
+    :param path: Path to the file to compute signature for.
+    :return: The SHA256 signature.
+    """
+    path = os.path.join(directory, path)
+    hash_obj = hashlib.sha256()
+    with open(path, "rb") as f:
+        hash_obj.update(f.read())
+    return hash_obj.hexdigest()
+
+
 def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[str],
                      compile_timeout: Optional[float] = None, record_libraries: bool = False,
                      gcc_override_flags: Optional[str] = None,
-                     compile_fn=docker_make) -> Iterator[RepoDB.MakefileEntry]:
+                     compile_fn=docker_make, hash_fn: Callable[[str, str], str] = _hash_file_sha256) \
+        -> Iterator[RepoDB.MakefileEntry]:
     r"""Compile all Makefiles as provided, and move generated binaries to the binary directory.
 
     :param repo_binary_dir: Path to the directory where generated binaries for the repository will be stored.
@@ -236,9 +272,13 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
         (unlimited time).
     :param record_libraries: If ``True``, A file named ``libraries.txt`` will be generated under
         :attr:`repo_binary_dir`, recording the libraries used in compilation. Defaults to ``False``.
+    :param gcc_override_flags: If not ``None``, these flags will be appended to each invocation of GCC.
     :param compile_fn: The method to call for compilation. Possible values are :meth:`ghcc.unsafe_make` and
         :meth:`ghcc.docker_make` (default).
-    :param gcc_override_flags: If not ``None``, these flags will be appended to each invocation of GCC.
+    :param hash_fn: The method to call to generate a hash signature for collected binaries. The binaries will be moved
+        to :attr:`repo_binary_dir` and renamed to the generated hash signature. The function takes as input variables
+        ``directory`` and ``file``, where ``directory`` is the path of the directory containing the Makefile, and
+        ``file`` is the path of the binary, relative to ``directory``.
     :return: A list of Makefile compilation results.
     """
     env = {}
@@ -258,20 +298,17 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
         # Only record Makefiles that either successfully compiled or yielded binaries.
         # Successful compilations might not generate binaries, while failed compilations may also yield binaries.
         if len(compile_result.elf_files) > 0 or compile_result.success:
-            sha256: List[str] = []
+            hashes: List[str] = []
             for path in compile_result.elf_files:
-                path = os.path.join(make_dir, path)
-                hash_obj = hashlib.sha256()
-                with open(path, "rb") as f:
-                    hash_obj.update(f.read())
-                digest = hash_obj.hexdigest()
-                sha256.append(digest)
-                shutil.move(path, os.path.join(repo_binary_dir, digest))
+                signature = hash_fn(make_dir, path)
+                hashes.append(signature)
+                full_path = os.path.join(make_dir, path)
+                shutil.move(full_path, os.path.join(repo_binary_dir, signature))
             yield {
                 "directory": make_dir,
                 "success": compile_result.success,
                 "binaries": compile_result.elf_files,
-                "sha256": sha256,
+                "sha256": hashes,
             }
     ghcc.clean(repo_path)
 

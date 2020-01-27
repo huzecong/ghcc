@@ -277,8 +277,8 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
                 ghcc.log(f"Compression timeout for {repo_full_name}, giving up", "error")
             except subprocess.CalledProcessError as e:
                 ghcc.log(f"Unknown error when compressing {repo_full_name}. Captured output: '{e.output}'", "error")
+            shutil.rmtree(repo_path)
             if compress_success:
-                shutil.rmtree(repo_path)
                 ghcc.log(f"Compressed {repo_full_name}, folder removed", "info")
             elif os.path.exists(archive_path):
                 os.remove(archive_path)

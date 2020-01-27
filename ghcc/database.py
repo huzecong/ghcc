@@ -19,6 +19,9 @@ class BaseEntry(TypedDict, total=False):
     """
     _id: Any  # actually `bson.ObjectId`, but we don't care
 
+    def __getattr__(self, item):
+        return self.__getitem__(item)
+
 
 class Database(abc.ABC):
     r"""A wrapper over MongoDB that handles the connection and authentication. This is an abstract base class, concrete
