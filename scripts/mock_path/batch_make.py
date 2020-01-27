@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import argparse
-import multiprocessing
+import functools
+import multiprocessing as mp
 import os
 import pickle
 import time
-from typing import List
+from typing import Dict, List, Optional
 
 import ghcc
 
@@ -19,17 +20,19 @@ REPO_PATH = "/usr/src/repo"
 BINARY_PATH = "/usr/src/bin"
 
 
-def worker(q: multiprocessing.Queue):
+def worker(q: mp.Queue):
     makefile_dirs = ghcc.find_makefiles(REPO_PATH)
 
     for makefile in ghcc.compile_and_move(
             BINARY_PATH, REPO_PATH, makefile_dirs, compile_fn=ghcc.unsafe_make,
             compile_timeout=args.compile_timeout, record_libraries=args.record_libraries,
             gcc_override_flags=args.gcc_override_flags):
+        # Modify makefile directory to use relative path.
+        makefile.directory = os.path.relpath(makefile.directory, REPO_PATH)
         q.put(makefile)
 
 
-def read_queue(makefiles: List[ghcc.RepoDB.MakefileEntry], q: 'multiprocessing.Queue[ghcc.RepoDB.MakefileEntry]'):
+def read_queue(makefiles: List[ghcc.RepoDB.MakefileEntry], q: 'mp.Queue[ghcc.RepoDB.MakefileEntry]'):
     try:
         while not q.empty():
             makefiles.append(q.get())
@@ -38,8 +41,8 @@ def read_queue(makefiles: List[ghcc.RepoDB.MakefileEntry], q: 'multiprocessing.Q
 
 
 def main():
-    q = multiprocessing.Queue()
-    process = multiprocessing.Process(target=worker, args=(q,))
+    q = mp.Queue()
+    process = mp.Process(target=worker, args=(q,))
     process.start()
     start_time = time.time()
 
