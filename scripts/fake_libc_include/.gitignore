@@ -1,0 +1,5 @@
+# This directory is used to store fake libc headers for use with `pycparser`. Contents will be downloaded automatically
+# when `match_functions.py` is run the for first time.
+# Please see <https://github.com/eliben/pycparser#what-about-the-standard-c-library-headers> for details.
+*
+!.gitignore
