@@ -89,17 +89,18 @@ def _check_elf_fn(directory: str, file: str) -> bool:
     return ELF_FILE_TAG in output
 
 
-def _make_skeleton(make_fn, directory: str, timeout: Optional[float] = None,
+def _make_skeleton(directory: str, timeout: Optional[float] = None,
                    env: Optional[Dict[str, str]] = None,
+                   *, make_fn,
                    check_file_fn: Callable[[str, str], bool] = _check_elf_fn) -> CompileResult:
     r"""A composable routine for different compilation methods. Different routines can be composed by specifying
     different ``make_fn``\ s and ``check_file_fn``\ s.
 
-    :param make_fn: The function to call for compilation. The function takes as input variables ``directory``,
-        ``timeout``, and ``env``.
     :param directory: The directory containing the Makefile.
     :param timeout: Maximum compilation time.
     :param env: A dictionary of environment variables.
+    :param make_fn: The function to call for compilation. The function takes as input variables ``directory``,
+        ``timeout``, and ``env``.
     :param check_file_fn: A function to determine whether a generated file should be collected, i.e., whether it is a
         binary file. The function takes as input variables ``directory`` and ``file``, where ``file`` is the path of the
         file to check, relative to ``directory``. Defaults to :meth:`_check_elf_fn`, which checks whether the file is an
@@ -206,7 +207,7 @@ def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[D
 
         - If compilation failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
     """
-    return _make_skeleton(_unsafe_make, directory, timeout, env)
+    return _make_skeleton(directory, timeout, env, make_fn=_unsafe_make)
 
 
 def _docker_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> None:
@@ -241,7 +242,7 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
 
         - If compilation failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
     """
-    return _make_skeleton(_docker_make, directory, timeout, env)
+    return _make_skeleton(directory, timeout, env, make_fn=_docker_make)
 
 
 def _hash_file_sha256(directory: str, path: str) -> str:
@@ -316,7 +317,8 @@ def docker_batch_compile(repo_binary_dir: str, repo_path: str,
                          compile_timeout: Optional[float] = None, record_libraries: bool = False,
                          gcc_override_flags: Optional[str] = None,
                          use_makefile_info_pkl: bool = False,
-                         user_id: Optional[int] = None, exception_log_fn=None) -> List[RepoDB.MakefileEntry]:
+                         user_id: Optional[int] = None, directory_mapping: Optional[Dict[str, str]] = None,
+                         exception_log_fn=None) -> List[RepoDB.MakefileEntry]:
     r"""Run batch compilation in Docker.
 
     :param repo_binary_dir: Path to store collected binaries.
@@ -329,6 +331,7 @@ def docker_batch_compile(repo_binary_dir: str, repo_path: str,
         ``repo_binary_dir``, that contains a pickled object of type ``Dict[str, Dict[str, str]]``, that maps Makefile
         directories to a mapping from binary paths to SHA256 hashes.
     :param user_id: The user ID to use inside the Docker container. See :meth:`ghcc.utils.docker.run_docker_command`.
+    :param directory_mapping: Additional directory mappings for Docker. Optional.
     :param exception_log_fn: A function to log exceptions occurred in Docker. The function takes the exception object
         as input and returns nothing.
     :return: A list of Makefile entries.
@@ -341,10 +344,13 @@ def docker_batch_compile(repo_binary_dir: str, repo_path: str,
             "batch_make.py",
             *(["--record-libraries"] if record_libraries else []),
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else []),
-            *(["--gcc-override-flags", f'"{gcc_override_flags}"'] if gcc_override_flags is not None else []),
+            # We use "--flag=value" instead of "--flag value" because the GCC flags are, you know, flags, which may be
+            # incorrectly interpreted by `argparse`.
+            *([f'--gcc-override-flags="{gcc_override_flags}"'] if gcc_override_flags is not None else []),
             *(["--use-makefile-info-pkl"] if use_makefile_info_pkl else [])],
             user=user_id, return_output=True,
-            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin"})
+            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin",
+                               **(directory_mapping or {})})
     except subprocess.CalledProcessError as e:
         end_time = time.time()
         if ((compile_timeout is not None and end_time - start_time > compile_timeout) or

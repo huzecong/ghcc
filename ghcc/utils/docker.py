@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 from .run import CommandResult, error_wrapper, run_command
+from ..log import log
 
 __all__ = [
     "run_docker_command",
@@ -67,9 +68,12 @@ def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None
     return ret
 
 
-def verify_docker_image() -> bool:
+def verify_docker_image(verbose: bool = False) -> bool:
     r"""Checks whether the Docker image is up-to-date. This is done by verifying the modification dates for all library
-    files are earlier than the Docker image build date."""
+    files are earlier than the Docker image build date.
+
+    :param verbose: If ``True``, prints out error message telling the user to rebuild Docker image.
+    """
     output = run_command(
         ["docker", "image", "ls", "gcc-custom", "--format", "{{.CreatedAt}}"], return_output=True).captured_output
     assert output is not None
@@ -88,4 +92,10 @@ def verify_docker_image() -> bool:
                 if subdir.endswith("__pycache__"):
                     continue
                 max_timestamp = max(max_timestamp, max(os.path.getmtime(os.path.join(subdir, f)) for f in files))
-    return max_timestamp <= image_creation_timestamp
+    up_to_date = max_timestamp <= image_creation_timestamp
+
+    if not up_to_date and verbose:
+        image_path = os.path.relpath(os.path.join(__file__, "..", "..", ".."), os.getcwd())
+        log("ERROR: Your Docker image is out-of-date. Please rebuild the image by: "
+            f"`docker build -t gcc-custom {image_path}`", "error", force_console=True)
+    return up_to_date

@@ -369,10 +369,7 @@ class MetaInfo:
 
 
 def main() -> None:
-    if not ghcc.utils.verify_docker_image():
-        image_path = os.path.relpath(os.path.join(ghcc.__file__, "..", ".."), os.getcwd())
-        ghcc.log("ERROR: Your Docker image is out-of-date. Please rebuild the image by: "
-                 f"`docker build -t gcc-custom {image_path}`", "error", force_console=True)
+    if not ghcc.utils.verify_docker_image(verbose=True):
         exit(1)
 
     args = Arguments()
