@@ -2,7 +2,7 @@ import abc
 import json
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import pymongo
 from mypy_extensions import TypedDict
@@ -25,6 +25,8 @@ class Database(abc.ABC):
     classes must override the :meth:`collection_name` property.
     """
 
+    Entry: TypedDict
+
     class Config(TypedDict):
         host: str
         port: int
@@ -40,10 +42,13 @@ class Database(abc.ABC):
         raise NotImplementedError
 
     @property
-    def index(self) -> Dict[str, int]:
-        r"""Key(s) to use as index. Each key is represented as a tuple of (name, order), where order is
-        ``pymongo.ASCENDING`` (1) or ``pymongo.DESCENDING`` (-1)."""
-        return {}
+    def index(self) -> List[Dict[str, int]]:
+        r"""Sets of key(s) to use as index. Each key is represented as a tuple of (name, order), where order is
+        ``pymongo.ASCENDING`` (1) or ``pymongo.DESCENDING`` (-1).
+
+        By default, all indexes are unique. To add a non-unique index, include ``"$unique": False`` in the dictionary.
+        """
+        return []
 
     def __init__(self, config_file: str = "./database-config.json"):
         r"""Create a connection to the database.
@@ -63,11 +68,19 @@ class Database(abc.ABC):
             username=config['username'], password=config['password'])
         self.collection = self.client[config['db_name']][self.collection_name]
 
-        if len(self.index) > 0:
-            if not any(index["key"].to_dict() == self.index for index in self.collection.list_indexes()):
+        for new_index in self.index:
+            new_index = new_index.copy()
+            unique = True
+            if "$unique" in new_index:
+                unique = new_index["$unique"]
+                del new_index["$unique"]
+            for key in new_index:
+                if key not in self.Entry.__annotations__:
+                    raise ValueError(f"Index contains key '{key}', which is not in Entry definition")
+            if not any(index["key"].to_dict() == new_index for index in self.collection.list_indexes()):
                 # Only create index if no such index exists.
                 # This check is required because `create_index` seems not idempotent, although it should be.
-                self.collection.create_index(list(self.index.items()), unique=True, background=True)
+                self.collection.create_index(list(new_index.items()), unique=unique, background=True)
 
     def close(self) -> None:
         del self.collection
@@ -99,11 +112,11 @@ class RepoDB(Database):
         return "repos"
 
     @property
-    def index(self) -> Dict[str, int]:
-        return {
+    def index(self) -> List[Dict[str, int]]:
+        return [{
             "repo_owner": pymongo.ASCENDING,
             "repo_name": pymongo.ASCENDING,
-        }
+        }]
 
     def get(self, repo_owner: str, repo_name: str) -> Optional[Entry]:
         r"""Get the DB entry corresponding to the specified repository.
@@ -120,7 +133,6 @@ class RepoDB(Database):
         :param repo_name: Name of the repository.
         :param clone_successful: Whether the repository was successfully cloned.
         :param repo_size: Size (in bytes) of the cloned repository, or ``-1`` (default) if cloning failed.
-        :return: The internal ID of the inserted entry.
         """
         record = self.get(repo_owner, repo_name)
         if record is None:
@@ -191,6 +203,8 @@ class RepoDB(Database):
 
 class BinaryDB(Database):
     class Entry(BaseEntry):
+        repo_owner: str
+        repo_name: str
         sha: str
         success: bool
 
@@ -199,8 +213,13 @@ class BinaryDB(Database):
         return "binaries"
 
     @property
-    def index(self) -> Dict[str, int]:
-        return {"sha": pymongo.ASCENDING}
+    def index(self) -> List[Dict[str, int]]:
+        return [
+            {"repo_owner": pymongo.ASCENDING,
+             "repo_name": pymongo.ASCENDING,
+             "$unique": False},
+            {"sha": pymongo.ASCENDING},
+        ]
 
     def get(self, sha: str) -> Optional[Entry]:
         r"""Get the DB entry corresponding to the specified binary hash.
@@ -209,16 +228,29 @@ class BinaryDB(Database):
         """
         return self.collection.find_one({"sha": sha})
 
-    def add_binary(self, sha: str, success: bool) -> None:
+    def get_binaries_by_repo(self, repo_owner: str, repo_name: str, success: bool = True) -> Iterator[Entry]:
+        r"""Get all matching DB entries given a repository.
+
+        :param repo_owner: Owner of the repository.
+        :param repo_name: Name of the repository.
+        :param success: The decompilation status of the binary.
+        :return: An iterator (``pymongo.Cursor``) over matching entries.
+        """
+        return self.collection.find({"repo_owner": repo_owner, "repo_name": repo_name, "success": success})
+
+    def add_binary(self, repo_owner: str, repo_name: str, sha: str, success: bool) -> None:
         r"""Add a new DB entry for the specified binary.
 
+        :param repo_owner: Owner of the repository.
+        :param repo_name: Name of the repository.
         :param sha: Hash of the binary.
         :param success: Whether the binary was successfully decompiled.
-        :return: The internal ID of the inserted entry.
         """
         record = self.get(sha)
         if record is None:
             record = {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
                 "sha": sha,
                 "success": success,
             }

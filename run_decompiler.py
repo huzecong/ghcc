@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Iterator, NamedTuple, Optional, Tuple
 
 import tqdm
+from mypy_extensions import TypedDict
 
 import ghcc
 
@@ -91,6 +92,13 @@ def run_decompiler(file_name: str, script: str, env: Optional[EnvDict] = None,
             ghcc.utils.run_command(idacall, env=env, timeout=timeout)
 
 
+class BinaryInfo(TypedDict):
+    repo_owner: str
+    repo_name: str
+    path: str
+    path_in_repo: str
+
+
 class DecompilationStatus(Enum):
     Success = auto()
     TimedOut = auto()
@@ -99,26 +107,26 @@ class DecompilationStatus(Enum):
 
 
 class DecompilationResult(NamedTuple):
+    info: BinaryInfo
     hash: str
-    binary_path: str
-    original_path: str
     status: DecompilationStatus
     time: Optional[datetime.timedelta] = None
 
 
-def exception_handler(e, paths: Tuple[str, str]):
-    binary_path, _ = paths
+def exception_handler(e, binary_info: BinaryInfo):
+    binary_path = binary_info["path"]
     ghcc.utils.log_exception(e, f"Exception occurred when processing {binary_path}")
 
 
 @ghcc.utils.exception_wrapper(exception_handler)
-def decompile(paths: Tuple[str, str], output_dir: str, binary_dir: str,
+def decompile(binary_info: BinaryInfo, output_dir: str, binary_dir: str,
               timeout: Optional[int] = None) -> DecompilationResult:
-    binary_path, original_path = paths
+    binary_path = binary_info["path"]
+    original_path = binary_info["path_in_repo"]
     binary_hash = os.path.split(binary_path)[1]
 
     def create_result(status: DecompilationStatus, time: Optional[datetime.timedelta] = None) -> DecompilationResult:
-        return DecompilationResult(binary_hash, binary_path, original_path, status, time)
+        return DecompilationResult(binary_info, binary_hash, status, time)
 
     output_path = os.path.join(output_dir, f"{binary_hash}.jsonl")
     if os.path.exists(output_path):
@@ -168,21 +176,33 @@ def decompile(paths: Tuple[str, str], output_dir: str, binary_dir: str,
     return create_result(DecompilationStatus.Success, duration)
 
 
-def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, Tuple[str, str]]) -> Iterator[Tuple[str, str]]:
-    binary_entries = set(entry["sha"] for entry in db.collection.find())  # getting stuff in batch is much faster
+def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, BinaryInfo]) -> Iterator[Tuple[str, str]]:
+    binary_entries = {entry["sha"]: entry for entry in db.collection.find()}  # getting stuff in batch is much faster
     skipped_count = 0
-    for sha, paths in binaries.items():
-        if sha in binary_entries:
-            skipped_count += 1
+    migrated_count = 0
+    for sha, info in binaries.items():
+        entry = binary_entries.get(sha, None)
+        if entry is not None:
+            if "repo_owner" in entry:
+                skipped_count += 1
+            else:
+                db.collection.update_one({"_id": entry["_id"]}, {"$set": {
+                    "repo_owner": info["repo_owner"],
+                    "repo_name": info["repo_name"],
+                }})
+                migrated_count += 1
             continue
+        if migrated_count > 0:
+            ghcc.log(f"Migrated {migrated_count} binary entries", force_console=True)
+            migrated_count = 0
         if skipped_count > 0:
             ghcc.log(f"Skipped {skipped_count} binaries that have been processed", force_console=True)
             skipped_count = 0
-        yield paths
+        yield info
 
 
-def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, Tuple[str, str]]:
-    binaries: Dict[str, Tuple[str, str]] = {}  # sha -> (path_to_bin, orig_path_in_repo)
+def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, BinaryInfo]:
+    binaries: Dict[str, BinaryInfo] = {}  # sha -> binary_info
     if cache_path is not None and os.path.exists(cache_path):
         with open(cache_path, "rb") as f:
             binaries = pickle.load(f)
@@ -196,7 +216,12 @@ def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, Tuple[str,
                     # Absolute Docker paths were used when compiling; remove them.
                     directory = f"{prefix}/" + ghcc.utils.remove_prefix(makefile['directory'], "/usr/src/repo/")
                     for path, sha in zip(makefile['binaries'], makefile['sha256']):
-                        binaries[sha] = (f"{prefix}/{sha}", f"{directory}/{path}")
+                        binaries[sha] = BinaryInfo({
+                            "repo_owner": repo['repo_owner'],
+                            "repo_name": repo['repo_name'],
+                            "path": f"{prefix}/{sha}",
+                            "path_in_repo": f"{directory}/{path}",
+                        })
         if cache_path is not None:
             with open(cache_path, "wb") as f:
                 pickle.dump(binaries, f)
@@ -234,7 +259,8 @@ def main():
             result: DecompilationResult
             file_count += 1
             if result is not None:
-                db.add_binary(result.hash, result.status is DecompilationStatus.Success)
+                db.add_binary(result.info["repo_owner"], result.info["repo_name"],
+                              result.hash, result.status is DecompilationStatus.Success)
             if file_count % 100 == 0:
                 ghcc.log(f"Processed {file_count} binaries", force_console=True)
 

@@ -50,7 +50,8 @@ def get_file_lines(path: str) -> int:
 def remove_prefix(s: str, prefix: str) -> str:
     r"""Remove the specified prefix from a string. If only parts of the prefix match, then only that part is removed.
     """
-    prefix_len = next((idx for idx in range(len(prefix)) if s[idx] != prefix[idx]), len(prefix))
+    length = min(len(s), len(prefix))
+    prefix_len = next((idx for idx in range(length) if s[idx] != prefix[idx]), length)
     return s[prefix_len:]
 
 
