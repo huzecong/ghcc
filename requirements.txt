@@ -1,6 +1,7 @@
-pycparser
-psutil
+argtyped
 mypy_extensions
+psutil
+pycparser
 pymongo
 tenacity
 termcolor

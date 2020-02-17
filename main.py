@@ -12,15 +12,16 @@ import shutil
 import subprocess
 from typing import Callable, Iterator, List, NamedTuple, Optional, Set
 
+import argtyped
+from argtyped import Choices, Switch
 from mypy_extensions import TypedDict
 
 import ghcc
-from ghcc.arguments import Choices, Switch
 from ghcc.database import RepoDB
 from ghcc.repo import CloneErrorType
 
 
-class Arguments(ghcc.arguments.Arguments):
+class Arguments(argtyped.Arguments):
     repo_list_file: str
     clone_folder: str = "repos/"  # where cloned repositories are stored (temporarily)
     binary_folder: str = "binaries/"  # where compiled binaries are stored
@@ -253,12 +254,12 @@ def clone_and_compile(repo_info: RepoInfo, clone_folder: str, binary_folder: str
         ghcc.log(msg, "success" if num_succeeded == len(makefile_dirs) else "warning")
 
         if record_metainfo:
-            meta_info = {
+            meta_info = PipelineMetaInfo({
                 "num_makefiles": len(makefile_dirs),
                 "has_gitmodules": os.path.exists(os.path.join(repo_path, ".gitmodules")),
                 "makefiles_using_automake": sum(
                     ghcc.contains_files(directory, ["configure.ac", "configure.in"]) for directory in makefile_dirs)
-            }
+            })
 
         # Stage 4: Clean and zip repo.
         if max_archive_size is not None and repo_size > max_archive_size:

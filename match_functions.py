@@ -8,18 +8,19 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Iterator, NamedTuple, Optional, Callable
 
+import argtyped
+from argtyped import Switch
 import pycparser
 import pycparser.c_generator
 
 import ghcc
-from ghcc.arguments import Switch
 from main import exception_handler
 from run_decompiler import get_binary_mapping
 
 FAKE_LIBC_PATH = str((Path(ghcc.__file__).parent.parent / "scripts" / "fake_libc_include").absolute())
 
 
-class Arguments(ghcc.arguments.Arguments):
+class Arguments(argtyped.Arguments):
     archive_dir: Optional[str] = "archives/"  # directory containing repo archives
     decompile_dir: str = "decompile_output_fixed/"  # directory containing decompiled output (JSONL files)
     temp_dir: str = "repos/"

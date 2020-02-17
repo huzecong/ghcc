@@ -6,11 +6,13 @@ import pickle
 import time
 from typing import Dict, List, Optional
 
+import argtyped
+from argtyped import Switch
+
 import ghcc
-from ghcc.arguments import Switch
 
 
-class Arguments(ghcc.arguments.Arguments):
+class Arguments(argtyped.Arguments):
     compile_timeout: int = 900  # wait up to 15 minutes
     record_libraries: Switch = False
     gcc_override_flags: Optional[str] = None

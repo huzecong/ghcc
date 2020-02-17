@@ -16,6 +16,7 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Dict, Iterator, NamedTuple, Optional, Tuple
 
+import argtyped
 import tqdm
 from mypy_extensions import TypedDict
 
@@ -24,7 +25,7 @@ import ghcc
 EnvDict = Dict[str, str]
 
 
-class Arguments(ghcc.arguments.Arguments):
+class Arguments(argtyped.Arguments):
     binaries_dir: str = "binaries/"  # directory containing binaries
     output_dir: str = "decompile_output/"  # output directory
     log_file: str = "decompile-log.txt"
