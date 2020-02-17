@@ -4,7 +4,7 @@ import os
 import threading
 import traceback
 import types
-from typing import Any, Iterator, List, Optional, TextIO, Union
+from typing import Any, Callable, Iterator, List, Optional, TextIO, TypeVar, Union
 
 import psutil
 
@@ -16,6 +16,8 @@ __all__ = [
     "kill_proc_tree",
 ]
 
+T = TypeVar('T')
+R = TypeVar('R')
 
 class Pool:
     r"""A wrapper over ``multiprocessing.Pool`` that uses single-threaded execution when :attr:`processes` is zero.
@@ -26,7 +28,7 @@ class Pool:
             return multiprocessing.Pool(processes, *args, **kwargs)
         return super().__new__(cls)  # return a mock Pool instance.
 
-    def imap_unordered(self, fn, iterator):
+    def imap_unordered(self, fn: Callable[[T], R], iterator: Iterator[T]) -> Iterator[R]:
         yield from map(fn, iterator)
 
     @staticmethod

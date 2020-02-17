@@ -2,7 +2,7 @@ import abc
 import json
 import os
 import sys
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Type
 
 import pymongo
 from mypy_extensions import TypedDict
@@ -10,8 +10,10 @@ from mypy_extensions import TypedDict
 __all__ = [
     "RepoDB",
     "BinaryDB",
+    "MatchFuncDB",
 ]
 
+Index = Dict[str, Any]
 
 class BaseEntry(TypedDict, total=False):
     r"""The base class for MongoDB entries. Setting ``total=False`` allows not setting the ``_id`` key when creating a
@@ -25,7 +27,8 @@ class Database(abc.ABC):
     classes must override the :meth:`collection_name` property.
     """
 
-    Entry: TypedDict
+    # For some reason, mypy thinks `TypedDict` is a function...
+    Entry: Type[TypedDict]  # type: ignore
 
     class Config(TypedDict):
         host: str
@@ -42,7 +45,7 @@ class Database(abc.ABC):
         raise NotImplementedError
 
     @property
-    def index(self) -> List[Dict[str, int]]:
+    def index(self) -> List[Index]:
         r"""Sets of key(s) to use as index. Each key is represented as a tuple of (name, order), where order is
         ``pymongo.ASCENDING`` (1) or ``pymongo.DESCENDING`` (-1).
 
@@ -112,7 +115,7 @@ class RepoDB(Database):
         return "repos"
 
     @property
-    def index(self) -> List[Dict[str, int]]:
+    def index(self) -> List[Index]:
         return [{
             "repo_owner": pymongo.ASCENDING,
             "repo_name": pymongo.ASCENDING,
@@ -213,7 +216,7 @@ class BinaryDB(Database):
         return "binaries"
 
     @property
-    def index(self) -> List[Dict[str, int]]:
+    def index(self) -> List[Index]:
         return [
             {"repo_owner": pymongo.ASCENDING,
              "repo_name": pymongo.ASCENDING,
@@ -258,6 +261,49 @@ class BinaryDB(Database):
         else:
             self.collection.update_one({"_id": record["_id"]}, {"$set": {
                 "success": success,
+            }})
+
+
+class MatchFuncDB(Database):
+    class Entry(BaseEntry):
+        repo_owner: str
+        repo_name: str
+        funcs_found: int
+        funcs_matched: int
+
+    @property
+    def collection_name(self) -> str:
+        return "match_func"
+
+    @property
+    def index(self) -> List[Index]:
+        return [{
+            "repo_owner": pymongo.ASCENDING,
+            "repo_name": pymongo.ASCENDING,
+        }]
+
+    def get(self, repo_owner: str, repo_name: str) -> Optional[Entry]:
+        r"""Get the DB entry corresponding to the specified repository.
+
+        :return: If entry exists, it is returned as a dictionary; otherwise ``None`` is returned.
+        """
+        return self.collection.find_one({"repo_owner": repo_owner, "repo_name": repo_name})
+
+    def add_repo(self, repo_owner: str, repo_name: str, funcs_found: int, funcs_matched: int) -> None:
+        r"""Add a new DB entry for the specified repository."""
+        record = self.get(repo_owner, repo_name)
+        if record is None:
+            record = {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "funcs_found": funcs_found,
+                "funcs_matched": funcs_matched,
+            }
+            self.collection.insert_one(record)
+        else:
+            self.collection.update_one({"_id": record["_id"]}, {"$set": {
+                "funcs_found": funcs_found,
+                "funcs_matched": funcs_matched,
             }})
 
 

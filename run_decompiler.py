@@ -177,7 +177,7 @@ def decompile(binary_info: BinaryInfo, output_dir: str, binary_dir: str,
     return create_result(DecompilationStatus.Success, duration)
 
 
-def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, BinaryInfo]) -> Iterator[Tuple[str, str]]:
+def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, BinaryInfo]) -> Iterator[BinaryInfo]:
     binary_entries = {entry["sha"]: entry for entry in db.collection.find()}  # getting stuff in batch is much faster
     skipped_count = 0
     migrated_count = 0
