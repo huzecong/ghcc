@@ -1,7 +1,13 @@
+import functools
 import os
+import pickle
 import platform
 import shutil
 import subprocess
+
+from typing import Optional
+
+from ..log import log
 
 __all__ = [
     "get_folder_size",
@@ -9,6 +15,7 @@ __all__ = [
     "get_file_lines",
     "remove_prefix",
     "copy_tree",
+    "cache",
 ]
 
 if platform.system() == "Darwin":
@@ -73,3 +80,35 @@ def copy_tree(src: str, dst: str, overwrite: bool = False):
         elif overwrite or not os.path.exists(dst_path):
             shutil.copy2(src_path, dst_path)
     shutil.copystat(src, dst)
+
+
+def cache(path: str, verbose: bool = True, name: Optional[str] = None):
+    r"""A function decorator that caches the output of the function to disk. If the cache file exists, it is loaded from
+    disk and the function will not be executed.
+
+    :param path: Path to the cache file.
+    :param verbose: If ``True``, will print to log.
+    :param name: Name of the object to load. Only used for logging purposes.
+    """
+    name = (name or 'cache').capitalize()
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapped(*args, **kwargs):
+            if path is not None and os.path.exists(path):
+                with open(path, "rb") as f:
+                    ret = pickle.load(f)
+                if verbose:
+                    log(f"{name} loaded from '{path}'")
+            else:
+                ret = func(*args, **kwargs)
+                if path is not None:
+                    with open(path, "wb") as f:
+                        pickle.dump(ret, f)
+                    if verbose:
+                        log(f"{name} saved to '{path}'")
+            return ret
+
+        return wrapped
+
+    return decorator

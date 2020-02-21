@@ -203,12 +203,9 @@ def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, BinaryInfo]) -> Iterato
 
 
 def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, BinaryInfo]:
-    binaries: Dict[str, BinaryInfo] = {}  # sha -> binary_info
-    if cache_path is not None and os.path.exists(cache_path):
-        with open(cache_path, "rb") as f:
-            binaries = pickle.load(f)
-        ghcc.log(f"Binary mapping cache loaded from '{cache_path}'")
-    else:
+    @ghcc.utils.cache(cache_path, name="binary mapping cache")
+    def _compute_binary_mapping() -> Dict[str, BinaryInfo]:
+        binaries: Dict[str, BinaryInfo] = {}  # sha -> binary_info
         with contextlib.closing(ghcc.RepoDB()) as repo_db:
             all_repos = repo_db.collection.find()
             for repo in tqdm.tqdm(all_repos, total=all_repos.count(), ncols=120, desc="Deduplicating binaries"):
@@ -223,11 +220,9 @@ def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, BinaryInfo
                             "path": f"{prefix}/{sha}",
                             "path_in_repo": f"{directory}/{path}",
                         })
-        if cache_path is not None:
-            with open(cache_path, "wb") as f:
-                pickle.dump(binaries, f)
-            ghcc.log(f"Binary mapping cache saved to '{cache_path}'")
-    return binaries
+        return binaries
+
+    return _compute_binary_mapping
 
 
 def main():

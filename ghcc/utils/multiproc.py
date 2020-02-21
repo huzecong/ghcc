@@ -19,6 +19,7 @@ __all__ = [
 T = TypeVar('T')
 R = TypeVar('R')
 
+
 class Pool:
     r"""A wrapper over ``multiprocessing.Pool`` that uses single-threaded execution when :attr:`processes` is zero.
     """
@@ -59,7 +60,20 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
     if closing is not None and not isinstance(closing, list):
         raise ValueError("`closing` should either be `None` or a list")
 
+    def close_fn():
+        for obj in (closing or []):
+            if callable(obj):
+                obj()
+            elif hasattr(obj, "close") and callable(getattr(obj, "close")):
+                obj.close()
+
     pool = Pool(processes, *args, **kwargs)
+    if processes == 0:
+        # Don't swallow exceptions in the single-process case.
+        yield pool  # type: ignore
+        close_fn()
+        return
+
     try:
         yield pool  # type: ignore
     except KeyboardInterrupt:
@@ -72,11 +86,7 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
         print(traceback.format_exc())
     finally:
         log("Gracefully shutting down...", "warning", force_console=True)
-        for obj in (closing or []):
-            if callable(obj):
-                obj()
-            elif hasattr(obj, "close") and callable(getattr(obj, "close")):
-                obj.close()
+        close_fn()
         if isinstance(pool, multiprocessing.pool.Pool):
             # Only required in multiprocessing scenario
             pool.close()

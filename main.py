@@ -379,7 +379,7 @@ def main() -> None:
         ghcc.utils.register_ipython_excepthook()
     ghcc.set_log_file(args.log_file)
     ghcc.set_logging_level(args.logging_level, console=True, file=False)
-    ghcc.log(repr(args), force_console=True)
+    ghcc.log("Running with arguments:\n" + args.to_string(), force_console=True)
 
     if os.path.exists(args.clone_folder):
         ghcc.log(f"Removing contents of clone folder '{args.clone_folder}'...", "warning", force_console=True)
