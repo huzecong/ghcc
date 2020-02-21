@@ -268,6 +268,7 @@ class MatchFuncDB(Database):
     class Entry(BaseEntry):
         repo_owner: str
         repo_name: str
+        files_found: int
         funcs_found: int
         funcs_matched: int
 
@@ -289,19 +290,21 @@ class MatchFuncDB(Database):
         """
         return self.collection.find_one({"repo_owner": repo_owner, "repo_name": repo_name})
 
-    def add_repo(self, repo_owner: str, repo_name: str, funcs_found: int, funcs_matched: int) -> None:
+    def add_repo(self, repo_owner: str, repo_name: str, files_found: int, funcs_found: int, funcs_matched: int) -> None:
         r"""Add a new DB entry for the specified repository."""
         record = self.get(repo_owner, repo_name)
         if record is None:
             record = {
                 "repo_owner": repo_owner,
                 "repo_name": repo_name,
+                "files_found": files_found,
                 "funcs_found": funcs_found,
                 "funcs_matched": funcs_matched,
             }
             self.collection.insert_one(record)
         else:
             self.collection.update_one({"_id": record["_id"]}, {"$set": {
+                "files_found": files_found,
                 "funcs_found": funcs_found,
                 "funcs_matched": funcs_matched,
             }})
