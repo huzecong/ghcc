@@ -2,11 +2,24 @@
 #define _FAKE_DEFINES_H
 
 /* GCC extensions */
-#define __attribute__(...)
+
+/*
+`__asm__(...)` & `__asm__ volatile(...)` syntax. This does not break volatile type qualifiers.
+However, this leaves `__asm__ volatile(...)` to be a single `__asm__`.
+Thus, we typedef `__asm__` before the define, so it becomes a single type, which is a valid statement.
+*/
+typedef int __asm__;
 #define __asm__(...)
+#define volatile(...)
+
+#define __attribute__(...)
 #define __inline
+#define __inline__
 #define __restrict
+#define __restrict__
 #define __extension__
+
+/* Original fake_libc */
 
 #define	NULL	0
 #define	BUFSIZ		1024

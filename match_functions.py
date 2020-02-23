@@ -110,8 +110,7 @@ RE_INTERNAL_ATTR = re.compile('__.*__')
 
 @functools.lru_cache()
 def child_attrs_of(klass):
-    """
-    Given a Node class, get a set of child attrs.
+    r"""Given a Node class, get a set of child attrs.
     Memoized to avoid highly repetitive string manipulation
     """
     non_child_attrs = set(klass.attr_names)
@@ -121,7 +120,10 @@ def child_attrs_of(klass):
 
 
 def ast_to_json(node: ASTNode) -> Dict[str, Any]:
-    """ Recursively convert an ast into dict representation. """
+    r"""Recursively convert an ast into dict representation.
+
+    Adapted from ``pycparser`` example ``c_json.py``.
+    """
     klass = node.__class__
 
     result = {}
@@ -132,12 +134,6 @@ def ast_to_json(node: ASTNode) -> Dict[str, Any]:
     # Local node attributes
     for attr in klass.attr_names:
         result[attr] = getattr(node, attr)
-
-    # # Coord object
-    # if node.coord:
-    #     result['coord'] = str(node.coord)
-    # else:
-    #     result['coord'] = None
 
     # Child attributes
     for child_name, child in node.children():
@@ -170,8 +166,6 @@ DECOMPILED_CODE_HEADER = r"""
 #define __cdecl
 #define __stdcall
 #define __usercall
-
-#include <stdint.h>
 
 #define __int128 long long  // who cares
 #define __int64 long long
@@ -210,6 +204,9 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     repo_path = temp_dir / "src"
     repo_binary_dir = temp_dir / "bin"
     repo_binary_dir.mkdir(parents=True, exist_ok=True)
+
+    ghcc.log(f"Begin processing {repo_full_name} ({total_files} files)")
+
     if os.path.exists(archive_path):
         # Extract archive
         ghcc.utils.run_command(["tar", f"xzf", str(archive_path)], cwd=str(temp_dir))
@@ -238,15 +235,16 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     generator = CGenerator()
     func_name_regex = re.compile(r'"function":\s*"([^"]+)"')
     line_control_regex = re.compile(r'^#[^\n]*$', flags=re.MULTILINE)
-    parse_error_regex = re.compile(r'.*?:(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)')
     decompile_path = Path(decompile_folder)
     extractor = FunctionExtractor()
     matched_functions = []
     files_found = 0
     functions_found = 0
     for makefile in makefiles:
+        mkfile_dir = Path(makefile['directory'])
         for path, sha in zip(makefile["binaries"], makefile["sha256"]):
             # Load and parse preprocessed original code.
+            code_path = mkfile_dir / path
             json_path = decompile_path / (sha + ".jsonl")
             if not json_path.exists():
                 continue
@@ -259,7 +257,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 ast: ASTNode = parser.parse(code, filename=os.path.join(repo_full_name, path))
             except pycparser.c_parser.ParseError as e:
                 # TODO: Check if problem is caused by __attribute__ or __restrict, and add #define's to resolve.
-                ghcc.log(f"Parser error when processing file {makefile['directory']}{path} ({sha}) in "
+                ghcc.log(f"Parser error when processing file {str(code_path)} ({sha}) in "
                          f"{repo_full_name}: {str(e)}", "error")
                 continue  # ignore parsing errors
             files_found += 1
@@ -279,11 +277,19 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
 
                 decompiled_data = json.loads(j)
                 decompiled_code = decompiled_data["raw_code"]
-                pretty_decompiled_code = re.sub(  # replace @@VAR with developer-assigned names
+                decompiled_code = re.sub(  # replace @@VAR with developer-assigned names
                     r"@@VAR_\d+@@[^@]+@@([_a-zA-Z0-9]+)", r"\1", decompiled_code)
-                pretty_decompiled_code = re.sub(  # remove the register allocation indication in `var@<rdi>`
-                    r"@<[a-z0-9]+>", "", pretty_decompiled_code)
-                decompiled_funcs[func_name] = pretty_decompiled_code
+                decompiled_code = re.sub(  # remove the register allocation indication in `var@<rdi>`
+                    r"@<[a-z0-9]+>", "", decompiled_code)
+                if func_name.startswith("_"):
+                    # For some reason, Hexrays would chomp off one leading underscore from function names in their
+                    # generated code, which might lead to corrupt code (`_01inverse` -> `01inverse`). Here we
+                    # heuristically try to find and replace the changed function name.
+                    decompiled_code = re.sub(  # replace all identifiers with matching name
+                        r"(?<![a-zA-Z0-9_])" + func_name[1:] + r"(?![a-zA-Z0-9_])", func_name, decompiled_code)
+                    # Note that this doesn't fix references of the function in other functions. But really, why would
+                    # someone name their function `_01inverse`?
+                decompiled_funcs[func_name] = decompiled_code
 
             # Generate code replacing original functions with decompiled functions.
             replacer = FunctionReplacer(decompiled_funcs)
@@ -306,72 +312,25 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                     code_to_parse = f.read()
                 # Remove line control macros so we know where errors occur
                 code_to_parse = line_control_regex.sub("", code_to_parse)
-            added_types = set()
-            while True:
-                try:
-                    decompiled_ast = parser.parse(code_to_parse)
-                    break
-                except pycparser.c_parser.ParseError as e:
-                    error_match = parse_error_regex.match(str(e))
-                    if error_match is None or not error_match.group("msg").startswith("before: "):
-                        ghcc.log("Parser error. Code:\n" + code_to_parse, "error")
-                        raise
-                    before_token = ghcc.utils.remove_prefix(error_match.group("msg"), "before: ")
-                    error_line = code_to_parse.split("\n")[int(error_match.group("line")) - 1]
-                    lexer = pycparser.c_lexer.CLexer(None, lambda _: None, lambda _: None, lambda _: False)
-                    lexer.build()
-                    lexer.input(error_line)
-                    error_pos = int(error_match.group("col")) - 1
-                    tokens = []
-                    while True:
-                        token = lexer.token()
-                        if token is None:
-                            break
-                        tokens.append(token)
-                    try:
-                        error_token_idx = next(
-                            idx for idx, token in enumerate(tokens)
-                            if token.lexpos == error_pos and token.value == before_token)
-                        # There are multiple possible cases here:
-                        # 1. The type is the first ID-type token before the reported token (`type token`). It might not
-                        #    be the one immediately in front (for example, `(type) token`， `type *token`).
-                        # 2. The type is the token itself. This is rare and only happens in a situation like:
-                        #      `int func(const token var)`
-                        #    Replacing `const` with any combination of type qualifiers also works.
-                        if (error_token_idx > 0 and
-                                tokens[error_token_idx - 1].type in ["CONST", "VOLATILE", "RESTRICT"]):
-                            type_token = tokens[error_token_idx]
-                        else:
-                            type_token = next(
-                                tokens[idx] for idx in range(error_token_idx - 1, -1, -1)
-                                if tokens[idx].type == "ID")
-                    except StopIteration:
-                        raise ValueError from None
 
-                    added_types.add(type_token.value)
-                    code_to_parse = f"typedef int {type_token.value};\n" + code_to_parse
+            try:
+                decompiled_ast = parse_decompiled_code(parser, code_to_parse)
+            except (ValueError, pycparser.c_parser.ParseError) as e:
+                ghcc.log(f"Could not parse decompiled code for {str(code_path)} ({sha}) "
+                         f"in {repo_full_name}: {str(e)}", "error")
+                continue
 
             decompiled_func_asts = extractor.find_functions(decompiled_ast)
             for func_name in decompiled_funcs.keys():
                 original_func_ast = function_asts[func_name]
                 if func_name not in decompiled_func_asts:
-                    # It seems ridiculous, but the decompiled code might use a different function name than what's
-                    # recorded. For example, in "ebc05bcf3c2d13cd9bbf199b6abf4e8f8461c8c02b6499f3bb6948dc90a501d3",
-                    # "__ks_insertsort_int" changed to "_ks_insertsort_int".
+                    # Maybe there's other Hexrays-renamed functions that we didn't fix, just ignore them.
                     continue
                 decompiled_func_ast = decompiled_func_asts[func_name]
                 original_code = generator.visit(original_func_ast)
                 decompiled_code = generator.visit(decompiled_func_ast)
                 original_ast_json = ast_to_json(original_func_ast)
                 decompiled_ast_json = ast_to_json(decompiled_func_ast)
-                # print(colored(f"Function Name: {func_name}", "green"))
-                # print(colored("Original Code:", "yellow"), original_code, sep='\n')
-                # print(colored("Original AST:", "yellow"))
-                # pprint.pprint(ast_to_json(function_asts[func_name])["body"])
-                # print(colored("Decompiled Code:", "red"), pretty_decompiled_code, sep='\n')
-                # print(colored("Decompiled AST:", "red"))
-                # pprint.pprint(ast_to_json(decompiled_ast)["body"])
-                # input("Press any key to continue...")
                 matched_func = MatchedFunction(
                     file_path=path, binary_hash=sha, func_name=func_name,
                     original_code=original_code, decompiled_code=decompiled_code,
@@ -383,6 +342,64 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
              f"functions matched: {len(matched_functions)}/{functions_found}", "success")
     return Result(repo_owner=repo_info.repo_owner, repo_name=repo_info.repo_name,
                   matched_functions=matched_functions, files_found=files_found, functions_found=functions_found)
+
+
+MAX_TYPE_FIX_RETRIES = 10
+PARSE_ERROR_REGEX = re.compile(r'.*?:(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)')
+
+
+def parse_decompiled_code(parser: pycparser.CParser, code_to_parse: str) -> ASTNode:
+    added_types = set()
+    lexer: Optional[pycparser.c_lexer.CLexer] = None
+    for _ in range(MAX_TYPE_FIX_RETRIES):
+        try:
+            decompiled_ast = parser.parse(code_to_parse)
+            break
+        except pycparser.c_parser.ParseError as e:
+            error_match = PARSE_ERROR_REGEX.match(str(e))
+            if error_match is None or not error_match.group("msg").startswith("before: "):
+                raise
+            before_token = ghcc.utils.remove_prefix(error_match.group("msg"), "before: ")
+            error_line = code_to_parse.split("\n")[int(error_match.group("line")) - 1]
+            if lexer is None:
+                lexer = pycparser.c_lexer.CLexer(None, lambda: None, lambda: None, lambda _: False)
+                lexer.build()
+            lexer.input(error_line)
+            error_pos = int(error_match.group("col")) - 1
+            tokens = []
+            while True:
+                token = lexer.token()
+                if token is None:
+                    break
+                tokens.append(token)
+            try:
+                error_token_idx = next(
+                    idx for idx, token in enumerate(tokens)
+                    if token.lexpos == error_pos and token.value == before_token)
+                # There are multiple possible cases here:
+                # 1. The type is the first ID-type token before the reported token (`type token`). It might not
+                #    be the one immediately in front (for example, `(type) token`， `type *token`).
+                # 2. The type is the token itself. This is rare and only happens in a situation like:
+                #      `int func(const token var)`
+                #    Replacing `const` with any combination of type qualifiers also works.
+                if (error_token_idx > 0 and
+                        tokens[error_token_idx - 1].type in ["CONST", "VOLATILE", "RESTRICT"]):
+                    type_token = tokens[error_token_idx]
+                else:
+                    type_token = next(
+                        tokens[idx] for idx in range(error_token_idx - 1, -1, -1)
+                        if tokens[idx].type == "ID")
+            except StopIteration:
+                # If we don't catch this, it would terminate the for-loop in `main()`. Stupid design.
+                raise e from None
+
+            if type_token.value in added_types:
+                raise ValueError(f"Type {type_token.value} already added (types so far: {list(added_types)})")
+            added_types.add(type_token.value)
+            code_to_parse = f"typedef int {type_token.value};\n" + code_to_parse
+    else:
+        raise ValueError(f"Type fixes exceeded limit ({MAX_TYPE_FIX_RETRIES})")
+    return decompiled_ast
 
 
 def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: Optional[str] = None,
@@ -474,7 +491,7 @@ def main():
                 continue
 
             # Write the matched functions to disk.
-            with (output_dir / f"{result.repo_owner}_____{result.repo_name}").open("w") as f:
+            with (output_dir / f"{result.repo_owner}_____{result.repo_name}.jsonl").open("w") as f:
                 for matched_func in result.matched_functions:
                     f.write(json.dumps(matched_func._asdict(), separators=(',', ':')) + "\n")
 
