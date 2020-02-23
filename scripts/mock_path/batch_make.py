@@ -18,6 +18,7 @@ class Arguments(argtyped.Arguments):
     gcc_override_flags: Optional[str] = None
     use_makefile_info_pkl: Switch = False
     single_process: Switch = False  # useful for debugging
+    verbose: Switch = False
 
 
 args = Arguments()

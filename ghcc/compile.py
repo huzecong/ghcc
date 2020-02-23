@@ -91,6 +91,7 @@ def _check_elf_fn(directory: str, file: str) -> bool:
 
 def _make_skeleton(directory: str, timeout: Optional[float] = None,
                    env: Optional[Dict[str, str]] = None,
+                   verbose: bool = True,
                    *, make_fn,
                    check_file_fn: Callable[[str, str], bool] = _check_elf_fn) -> CompileResult:
     r"""A composable routine for different compilation methods. Different routines can be composed by specifying
@@ -99,6 +100,7 @@ def _make_skeleton(directory: str, timeout: Optional[float] = None,
     :param directory: The directory containing the Makefile.
     :param timeout: Maximum compilation time.
     :param env: A dictionary of environment variables.
+    :param verbose: If ``True``, print out executed commands and outputs.
     :param make_fn: The function to call for compilation. The function takes as input variables ``directory``,
         ``timeout``, and ``env``.
     :param check_file_fn: A function to determine whether a generated file should be collected, i.e., whether it is a
@@ -113,7 +115,7 @@ def _make_skeleton(directory: str, timeout: Optional[float] = None,
         clean(directory)
 
         # Call the actual function for `make`.
-        make_fn(directory, timeout, env)
+        make_fn(directory, timeout=timeout, env=env, verbose=verbose)
         result = _create_result(True)
 
     except subprocess.TimeoutExpired as e:
@@ -148,18 +150,19 @@ def _make_skeleton(directory: str, timeout: Optional[float] = None,
     return result
 
 
-def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> None:
+def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None,
+                 verbose: bool = False) -> None:
     env = {"PATH": f"{MOCK_PATH}:{os.environ['PATH']}", **(env or {})}
     # Try GNU Automake first. Note that errors are ignored because it's possible that the original files still work.
     if contains_files(directory, ["configure.ac", "configure.in"]):
         start_time = time.time()
         if os.path.isfile(os.path.join(directory, "autogen.sh")):
             # Some projects with non-trivial build instructions provide an "autogen.sh" script.
-            run_command(["chmod", "+x", "./autogen.sh"], env=env, cwd=directory)
-            run_command(["./autogen.sh"], env=env, cwd=directory, timeout=timeout, ignore_errors=True)
+            run_command(["chmod", "+x", "./autogen.sh"], env=env, cwd=directory, verbose=verbose)
+            run_command(["./autogen.sh"], env=env, cwd=directory, timeout=timeout, verbose=verbose, ignore_errors=True)
         else:
             run_command(["autoreconf", "--force", "--install"],
-                        env=env, cwd=directory, timeout=timeout, ignore_errors=True)
+                        env=env, cwd=directory, timeout=timeout, ignore_errors=True, verbose=verbose)
         end_time = time.time()
         if timeout is not None:
             timeout = max(1.0, timeout - int(end_time - start_time))
@@ -167,13 +170,13 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
     # Try running `./configure` if it exists.
     if os.path.isfile(os.path.join(directory, "configure")):
         start_time = time.time()
-        run_command(["chmod", "+x", "./configure"], env=env, cwd=directory)
-        ret = run_command(
-            ["./configure", "--disable-werror"], env=env, cwd=directory, timeout=timeout, ignore_errors=True)
+        run_command(["chmod", "+x", "./configure"], env=env, cwd=directory, verbose=verbose)
+        ret = run_command(["./configure", "--disable-werror"], env=env, cwd=directory, timeout=timeout,
+                          verbose=verbose, ignore_errors=True)
         end_time = time.time()
         if ret.return_code != 0 and end_time - start_time <= 2:
             # The configure file might not support `--disable-werror` and died instantly. Try again without the flag.
-            run_command(["./configure"], env=env, cwd=directory, timeout=timeout)
+            run_command(["./configure"], env=env, cwd=directory, timeout=timeout, verbose=verbose)
             end_time = time.time()
         if timeout is not None:
             timeout = max(1.0, timeout - int(end_time - start_time))
@@ -181,7 +184,7 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
     # Make while ignoring errors.
     # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
     try:
-        run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout)
+        run_command(["make", "--keep-going", "-j1"], env=env, cwd=directory, timeout=timeout, verbose=verbose)
     except subprocess.CalledProcessError as err:
         expected_msg = b"missing separator"
         if not (err.output is not None and expected_msg in err.output):
@@ -189,10 +192,11 @@ def _unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[
         else:
             # Try again using BSD Make instead of GNU Make. Note BSD Make does not have a flag equivalent to
             # `-B/--always-make`.
-            run_command(["bmake", "-k", "-j1"], env=env, cwd=directory, timeout=timeout)
+            run_command(["bmake", "-k", "-j1"], env=env, cwd=directory, timeout=timeout, verbose=verbose)
 
 
-def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
+def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None,
+                verbose: bool = False) -> CompileResult:
     r"""Run ``make`` in the given directory and collect compilation outputs.
 
     .. warning::
@@ -202,29 +206,32 @@ def unsafe_make(directory: str, timeout: Optional[float] = None, env: Optional[D
     :param directory: Path to the directory containing the Makefile.
     :param timeout: Maximum time allowed for compilation, in seconds. Defaults to ``None`` (unlimited time).
     :param env: The environment variables to use when calling ``make``.
+    :param verbose: If ``True``, print out executed commands and outputs.
     :return: An instance of :class:`CompileResult` indicating the result. Fields ``success`` and ``elf_files`` are not
         ``None``.
 
         - If compilation failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
     """
-    return _make_skeleton(directory, timeout, env, make_fn=_unsafe_make)
+    return _make_skeleton(directory, timeout, env, verbose, make_fn=_unsafe_make)
 
 
-def _docker_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> None:
+def _docker_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None,
+                 verbose: bool = False) -> None:
     if os.path.isfile(os.path.join(directory, "configure")):
         # Try running `./configure` if it exists.
         run_docker_command("chmod +x configure && ./configure && make --keep-going -j1",
                            user=0, cwd="/usr/src", directory_mapping={directory: "/usr/src"},
-                           timeout=timeout, shell=True, env=env)
+                           timeout=timeout, shell=True, env=env, verbose=verbose)
     else:
         # Make while ignoring errors.
         # `-B/--always-make` could give strange errors for certain Makefiles, e.g. ones containing "%:"
         run_docker_command(["make", "--keep-going", "-j1"],
                            user=0, cwd="/usr/src", directory_mapping={directory: "/usr/src"},
-                           timeout=timeout, env=env)
+                           timeout=timeout, env=env, verbose=verbose)
 
 
-def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None) -> CompileResult:
+def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[Dict[str, str]] = None,
+                verbose: bool = False) -> CompileResult:
     r"""Run ``make`` within Docker and collect compilation outputs.
 
     .. note::
@@ -237,12 +244,13 @@ def docker_make(directory: str, timeout: Optional[float] = None, env: Optional[D
     :param directory: Path to the directory containing the Makefile.
     :param timeout: Maximum time allowed for compilation, in seconds. Defaults to ``None`` (unlimited time).
     :param env: The environment variables to use when calling ``make``.
+    :param verbose: If ``True``, print out executed commands and outputs.
     :return: An instance of :class:`CompileResult` indicating the result. Fields ``success`` and ``elf_files`` are not
         ``None``.
 
         - If compilation failed, the fields ``error_type`` and ``captured_output`` are also not ``None``.
     """
-    return _make_skeleton(directory, timeout, env, make_fn=_docker_make)
+    return _make_skeleton(directory, timeout, env, verbose, make_fn=_docker_make)
 
 
 def _hash_file_sha256(directory: str, path: str) -> str:
@@ -316,7 +324,7 @@ def compile_and_move(repo_binary_dir: str, repo_path: str, makefile_dirs: List[s
 def docker_batch_compile(repo_binary_dir: str, repo_path: str,
                          compile_timeout: Optional[float] = None, record_libraries: bool = False,
                          gcc_override_flags: Optional[str] = None,
-                         use_makefile_info_pkl: bool = False,
+                         use_makefile_info_pkl: bool = False, verbose: bool = False,
                          user_id: Optional[int] = None, directory_mapping: Optional[Dict[str, str]] = None,
                          exception_log_fn=None) -> List[RepoDB.MakefileEntry]:
     r"""Run batch compilation in Docker.
@@ -330,6 +338,7 @@ def docker_batch_compile(repo_binary_dir: str, repo_path: str,
     :param use_makefile_info_pkl: If ``True``, the caller must prepare a file named ``makefiles.pkl`` under
         ``repo_binary_dir``, that contains a pickled object of type ``Dict[str, Dict[str, str]]``, that maps Makefile
         directories to a mapping from binary paths to SHA256 hashes.
+    :param verbose: If ``True``, print out executed commands and outputs.
     :param user_id: The user ID to use inside the Docker container. See :meth:`ghcc.utils.docker.run_docker_command`.
     :param directory_mapping: Additional directory mappings for Docker. Optional.
     :param exception_log_fn: A function to log exceptions occurred in Docker. The function takes the exception object
@@ -340,17 +349,19 @@ def docker_batch_compile(repo_binary_dir: str, repo_path: str,
     try:
         # Don't rely on Docker timeout, but instead constrain running time in script run in Docker. Otherwise we won't
         # get the results file if any compilation task timeouts.
-        ret = run_docker_command([
+        cmd = [
             "batch_make.py",
             *(["--record-libraries"] if record_libraries else []),
             *(["--compile-timeout", str(compile_timeout)] if compile_timeout is not None else []),
             # We use "--flag=value" instead of "--flag value" because the GCC flags are, you know, flags, which may be
             # incorrectly interpreted by `argparse`.
             *([f'--gcc-override-flags="{gcc_override_flags}"'] if gcc_override_flags is not None else []),
-            *(["--use-makefile-info-pkl"] if use_makefile_info_pkl else [])],
-            user=user_id, return_output=True,
-            directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin",
-                               **(directory_mapping or {})})
+            *(["--use-makefile-info-pkl"] if use_makefile_info_pkl else []),
+            *(["--verbose"] if verbose else []),
+        ]
+        ret = run_docker_command(cmd, user=user_id, return_output=True,
+                                 directory_mapping={repo_path: "/usr/src/repo", repo_binary_dir: "/usr/src/bin",
+                                                    **(directory_mapping or {})})
     except subprocess.CalledProcessError as e:
         end_time = time.time()
         if ((compile_timeout is not None and end_time - start_time > compile_timeout) or
