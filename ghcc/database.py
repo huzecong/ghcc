@@ -15,6 +15,7 @@ __all__ = [
 
 Index = Dict[str, Any]
 
+
 class BaseEntry(TypedDict, total=False):
     r"""The base class for MongoDB entries. Setting ``total=False`` allows not setting the ``_id`` key when creating a
     dictionary to be inserted.
@@ -88,6 +89,46 @@ class Database(abc.ABC):
     def close(self) -> None:
         del self.collection
         self.client.close()
+
+    def safe_iter(self, batch_size: int = 1000, static: bool = False) -> Iterator['Entry']:
+        r"""Safely iterate over all documents. The normal way (``for entry in collection.find()``) result in cursor
+        timeout if the iteration takes too long, and it's unavoidable unless configured on the server.
+
+        The approach here follows that in the StackOverflow answer (https://stackoverflow.com/a/40434043/4909228). We
+        choose a unique index, sort the entire collection according to the index, and then fetch a batch of entries.
+        When the batch is depleted, a new batch is fetched.
+
+        :param batch_size: The size (number of entries) of each fetched batch. A larger batch sizer reduces iteration
+            overhead, but uses more memory. Defaults to 1000.
+        :param static: Whether the DB is static, i.e., whether there would be modifications during iteration. If not,
+            a set of IDs for iterated entries will be recorded to prevent yielding the same entry twice, which incurs
+            overhead.
+        :return: An iterator over all entries.
+        """
+        # Find a unique index.
+        if all(not index.get("$unique", True) for index in self.index):
+            raise ValueError(f"`safe_iter` does not work for database {self.__class__.__name__} because there are no "
+                             f"unique indexes.")
+        index = next(index for index in self.index if index.get("$unique", True))
+        if "$unique" in index:
+            del index["$unique"]
+
+        yielded_ids = set()
+        prev_index = 0
+        while True:
+            cursor = self.collection.find().sort(list(index.items())).skip(prev_index).limit(batch_size)
+            if static:
+                entries = list(cursor)
+            else:
+                entries = []
+                for entry in cursor:
+                    if entry["_id"] not in yielded_ids:
+                        entries.append(entry)
+                        yielded_ids.add(entry["_id"])
+            if len(entries) == 0:
+                break
+            yield from entries
+            prev_index += batch_size
 
 
 class RepoDB(Database):

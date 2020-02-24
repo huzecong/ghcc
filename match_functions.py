@@ -522,7 +522,7 @@ def _iter_repos(db_entries: Set[Tuple[str, str]], max_count: Optional[int] = Non
             return repo_binaries
 
         repo_binaries = _get_repo_binaries_info()
-        repo_entries: Iterator[ghcc.RepoDB.Entry] = repo_db.collection.find()
+        repo_entries: Iterator[ghcc.RepoDB.Entry] = repo_db.safe_iter(static=True)
         if skip_to is not None:
             skip_to_repo = tuple(skip_to.split("/"))
             repo_entries = ghcc.utils.drop_until(
