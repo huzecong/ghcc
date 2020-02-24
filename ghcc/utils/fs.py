@@ -82,11 +82,11 @@ def copy_tree(src: str, dst: str, overwrite: bool = False):
     shutil.copystat(src, dst)
 
 
-def cache(path: str, verbose: bool = True, name: Optional[str] = None):
+def cache(path: Optional[str], verbose: bool = True, name: Optional[str] = None):
     r"""A function decorator that caches the output of the function to disk. If the cache file exists, it is loaded from
     disk and the function will not be executed.
 
-    :param path: Path to the cache file.
+    :param path: Path to the cache file. If ``None``, no cache is loaded or saved.
     :param verbose: If ``True``, will print to log.
     :param name: Name of the object to load. Only used for logging purposes.
     """

@@ -78,10 +78,6 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
         yield pool  # type: ignore
     except KeyboardInterrupt:
         print("Press Ctrl-C again to force terminate...")
-    except BlockingIOError as e:
-        print(traceback.format_exc())
-        pool.close()
-        pool.terminate()
     except Exception as e:
         print(traceback.format_exc())
     finally:

@@ -34,6 +34,9 @@ def main():
     parser.add_argument('-mno-sched-prolog', action='store_true')  # ignored
     args, unknown_args = parser.parse_known_args(sys.argv[1:])
 
+    # The `-ggdb[level]` flag would preserve macros for certain levels. This would cause problems with `pycparser`.
+    unknown_args = [arg for arg in unknown_args if not arg.startswith("-ggdb")]
+
     # Remove the mock path from PATH to find the actual GCC.
     cur_path = os.path.abspath(os.path.split(__file__)[0])
     all_paths = [os.path.abspath(path) for path in os.environ["PATH"].split(":")]

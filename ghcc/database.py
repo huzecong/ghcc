@@ -271,6 +271,7 @@ class MatchFuncDB(Database):
         files_found: int
         funcs_found: int
         funcs_matched: int
+        funcs_matched_without_ast: int
 
     @property
     def collection_name(self) -> str:
@@ -290,7 +291,8 @@ class MatchFuncDB(Database):
         """
         return self.collection.find_one({"repo_owner": repo_owner, "repo_name": repo_name})
 
-    def add_repo(self, repo_owner: str, repo_name: str, files_found: int, funcs_found: int, funcs_matched: int) -> None:
+    def add_repo(self, repo_owner: str, repo_name: str,
+                 files_found: int, funcs_found: int, funcs_matched: int, funcs_matched_without_ast: int) -> None:
         r"""Add a new DB entry for the specified repository."""
         record = self.get(repo_owner, repo_name)
         if record is None:
@@ -300,6 +302,7 @@ class MatchFuncDB(Database):
                 "files_found": files_found,
                 "funcs_found": funcs_found,
                 "funcs_matched": funcs_matched,
+                "funcs_matched_without_ast": funcs_matched_without_ast,
             }
             self.collection.insert_one(record)
         else:
@@ -307,6 +310,7 @@ class MatchFuncDB(Database):
                 "files_found": files_found,
                 "funcs_found": funcs_found,
                 "funcs_matched": funcs_matched,
+                "funcs_matched_without_ast": funcs_matched_without_ast,
             }})
 
 

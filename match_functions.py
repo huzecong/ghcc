@@ -5,7 +5,9 @@ import json
 import os
 import pickle
 import re
+import shutil
 import tempfile
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
@@ -14,13 +16,24 @@ import argtyped
 import pycparser
 import tqdm
 from argtyped import Switch
-from pycparser.c_ast import Node as ASTNode
+from pycparser.c_lexer import CLexer
+from pycparser.c_parser import CParser
 from pycparser.c_generator import CGenerator
+from pycparser.c_ast import Node as ASTNode
+# from pycparserext.ext_c_parser import GnuCParser as CParser
+# from pycparserext.ext_c_generator import GnuCGenerator as CGenerator
 
 import ghcc
 from main import exception_handler
 
 FAKE_LIBC_PATH = str((Path(ghcc.__file__).parent.parent / "scripts" / "fake_libc_include").absolute())
+
+
+class LexToken:  # stub
+    type: str
+    value: str
+    lineno: int
+    lexpos: int
 
 
 class Arguments(argtyped.Arguments):
@@ -37,6 +50,8 @@ class Arguments(argtyped.Arguments):
     write_db: Switch = True
     skip_to: Optional[str]  # skip to specified repository
     repo_binary_info_cache_path: Optional[str]  # if specified, load/save repo_binaries instead of loading from DB
+    verbose: Switch = False
+    preprocess_timeout: Optional[int] = 120
 
 
 class RepoInfo(NamedTuple):
@@ -73,6 +88,10 @@ class FunctionExtractor:
 class FunctionReplacer(CGenerator):
     r"""An AST visitor inherited from ``pycparser.CGenerator``, but replaces FuncDef nodes with other function code."""
 
+    BOUNDARY_PREFIX = "typedef int __func__"
+    BEGIN_SUFFIX = "__begin;"
+    END_SUFFIX = "__end;"
+
     def __init__(self, func_defs: Dict[str, str]):
         super().__init__()
         self._func_defs = func_defs
@@ -80,8 +99,62 @@ class FunctionReplacer(CGenerator):
     def visit_FuncDef(self, node: pycparser.c_ast.FuncDef):
         func_name = node.decl.name
         if func_name in self._func_defs:
-            return self._func_defs[func_name]
+            # Add dummy typedefs around the function code, so we can still extract raw code even if we can't parse it.
+            func_begin = self.BOUNDARY_PREFIX + func_name + self.BEGIN_SUFFIX
+            func_end = self.BOUNDARY_PREFIX + func_name + self.END_SUFFIX
+            return "\n".join(["", func_begin, self._func_defs[func_name], func_end, ""])
         return super().visit_FuncDef(node)
+
+    def extract_func_name(self, line: str) -> Tuple[Optional[str], bool]:
+        r"""Extracts the function name from a function boundary marker.
+
+        :param line:
+        :return: A tuple containing the function name and a ``bool`` indicating whether the marker indicates the
+            beginning of a function. If the line is not a boundary marker, or the function name is not recognized,
+            ``None`` is returned instead of the extracted name.
+        """
+        func_name = None
+        is_begin = False
+        if line.startswith(self.BOUNDARY_PREFIX):
+            if line.endswith(self.BEGIN_SUFFIX):
+                func_name = line[len(self.BOUNDARY_PREFIX):-len(self.BEGIN_SUFFIX)]
+                is_begin = True
+            if line.endswith(self.END_SUFFIX):
+                func_name = line[len(self.BOUNDARY_PREFIX):-len(self.END_SUFFIX)]
+        if func_name is not None and func_name in self._func_defs:
+            return func_name, is_begin
+        return None, False
+
+
+class Lexer:
+    @staticmethod
+    def _error_func(msg, loc0, loc1):
+        pass
+
+    @staticmethod
+    def _brace_func():
+        pass
+
+    @staticmethod
+    def _type_lookup_func(typ):
+        return False
+
+    def __init__(self):
+        self.lexer = CLexer(self._error_func, self._brace_func, self._brace_func, self._type_lookup_func)
+        self.lexer.build(optimize=True, lextab='pycparser.lextab')
+
+    def lex_tokens(self, code: str) -> List[LexToken]:
+        self.lexer.input(code)
+        tokens = []
+        while True:
+            token = self.lexer.token()
+            if token is None:
+                break
+            tokens.append(token)
+        return tokens
+
+    def lex(self, code: str) -> List[str]:
+        return [token.value for token in self.lex_tokens(code)]
 
 
 class MatchedFunction(NamedTuple):
@@ -90,10 +163,10 @@ class MatchedFunction(NamedTuple):
     binary_hash: str
     # Code
     func_name: str
-    original_code: str
-    decompiled_code: str
+    original_code: List[str]  # tokenized code
+    decompiled_code: List[str]  # tokenized code
     original_ast_json: Dict[str, Any]
-    decompiled_ast_json: Dict[str, Any]
+    decompiled_ast_json: Optional[Dict[str, Any]]
 
 
 class Result(NamedTuple):
@@ -102,6 +175,7 @@ class Result(NamedTuple):
     matched_functions: List[MatchedFunction]
     files_found: int
     functions_found: int
+    funcs_without_asts: int
 
 
 RE_CHILD_ARRAY = re.compile(r'(.*)\[(.*)\]')
@@ -159,8 +233,8 @@ def ast_to_json(node: ASTNode) -> Dict[str, Any]:
     return result
 
 
+# Theoretically we also need `_fake_gcc_ext.h`, but the code probably has `#include`'s.
 DECOMPILED_CODE_HEADER = r"""
-#define __attribute__(...)
 #define __fastcall
 #define __noreturn
 #define __cdecl
@@ -188,7 +262,7 @@ typedef int (*__compar_fn_t)(const void *, const void *);
 
 @ghcc.utils.exception_wrapper(exception_handler)
 def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, decompile_folder: str,
-                    use_fake_libc_headers: bool = True) -> Result:
+                    use_fake_libc_headers: bool = True, preprocess_timeout: Optional[int] = None) -> Result:
     # Directions:
     # 1. Clone or extract from archive.
     # 2. For each Makefile, rerun the compilation process with the flag "-E", so only the preprocessor is run.
@@ -196,24 +270,26 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     #    Also, consider using "-nostdlib -Ipath/to/fake_libc_include" as suggested by `pycparser`.
     # 3. The .o files are now preprocessed C code. Parse them using `pycparser` to obtain a list of functions.
 
+    start_time = time.time()
     total_files = sum(len(makefile) for makefile in repo_info.makefiles.values())
     repo_folder_name = f"{repo_info.repo_owner}_____{repo_info.repo_name}"
     repo_full_name = f"{repo_info.repo_owner}/{repo_info.repo_name}"
     archive_path = (Path(archive_folder) / f"{repo_full_name}.tar.gz").absolute()
-    temp_dir = (Path(temp_folder) / repo_folder_name).absolute()
-    repo_path = temp_dir / "src"
-    repo_binary_dir = temp_dir / "bin"
+    repo_dir = (Path(temp_folder) / repo_folder_name).absolute()
+    repo_src_path = repo_dir / "src"
+    repo_binary_dir = repo_dir / "bin"
     repo_binary_dir.mkdir(parents=True, exist_ok=True)
+    has_error = False
 
     ghcc.log(f"Begin processing {repo_full_name} ({total_files} files)")
 
     if os.path.exists(archive_path):
         # Extract archive
-        ghcc.utils.run_command(["tar", f"xzf", str(archive_path)], cwd=str(temp_dir))
-        (temp_dir / repo_folder_name).rename(repo_path)
+        ghcc.utils.run_command(["tar", f"xzf", str(archive_path)], cwd=str(repo_dir))
+        (repo_dir / repo_folder_name).rename(repo_src_path)
     else:
         # Clone repo
-        ret = ghcc.clone(repo_info.repo_owner, repo_info.repo_name, clone_folder=str(temp_dir), folder_name="src")
+        ret = ghcc.clone(repo_info.repo_owner, repo_info.repo_name, clone_folder=str(repo_dir), folder_name="src")
         assert ret.error_type in [None, ghcc.CloneErrorType.SubmodulesFailed]
 
     # Write makefile info to pickle
@@ -227,12 +303,13 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
         directory_mapping = {FAKE_LIBC_PATH: "/usr/src/libc"}
 
     makefiles = ghcc.docker_batch_compile(
-        str(repo_binary_dir), str(repo_path), compile_timeout=600,
+        str(repo_binary_dir), str(repo_src_path), compile_timeout=preprocess_timeout,
         gcc_override_flags=gcc_flags, use_makefile_info_pkl=True, directory_mapping=directory_mapping,
         exception_log_fn=functools.partial(exception_handler, repo_info=repo_info))
 
-    parser = pycparser.CParser()
+    parser = CParser()
     generator = CGenerator()
+    lexer = Lexer()
     func_name_regex = re.compile(r'"function":\s*"([^"]+)"')
     line_control_regex = re.compile(r'^#[^\n]*$', flags=re.MULTILINE)
     decompile_path = Path(decompile_folder)
@@ -256,9 +333,9 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             try:
                 ast: ASTNode = parser.parse(code, filename=os.path.join(repo_full_name, path))
             except pycparser.c_parser.ParseError as e:
-                # TODO: Check if problem is caused by __attribute__ or __restrict, and add #define's to resolve.
-                ghcc.log(f"Parser error when processing file {str(code_path)} ({sha}) in "
-                         f"{repo_full_name}: {str(e)}", "error")
+                ghcc.log(f"{repo_full_name}: Parser error when processing file "
+                         f"{str(code_path)} ({sha}): {str(e)}", "error")
+                has_error = True
                 continue  # ignore parsing errors
             files_found += 1
             function_asts = extractor.find_functions(ast)
@@ -302,55 +379,93 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 output_path = os.path.join(temp_dir, "test.prep.c")
                 with open(input_path, "w") as f:
                     f.write(code_to_preprocess)
-                ret = ghcc.utils.run_command(
+                compile_ret = ghcc.utils.run_command(
                     ["gcc", "-E", "-I" + FAKE_LIBC_PATH, "-o", output_path, input_path], ignore_errors=True)
-                if ret.return_code != 0:
-                    ghcc.log("GCC returned nonzero. Error:\n" + ret.captured_output.decode("utf-8"), "error")
-                    ghcc.log("Code:\n" + code_to_preprocess, "error")
-                    raise ValueError(ret.return_code)
+                if compile_ret.return_code != 0:
+                    msg = (f"{repo_full_name}: GCC return value nonzero for decompiled code of "
+                           f"{str(code_path)} ({sha})")
+                    if compile_ret.captured_output is not None:
+                        msg += ":\n" + compile_ret.captured_output.decode("utf-8")
+                    ghcc.log(msg, "error")
+                    has_error = True
+                    continue
+
                 with open(output_path, "r") as f:
                     code_to_parse = f.read()
                 # Remove line control macros so we know where errors occur
                 code_to_parse = line_control_regex.sub("", code_to_parse)
 
             try:
-                decompiled_ast = parse_decompiled_code(parser, code_to_parse)
+                decompiled_ast = parse_decompiled_code(lexer, parser, code_to_parse)
             except (ValueError, pycparser.c_parser.ParseError) as e:
-                ghcc.log(f"Could not parse decompiled code for {str(code_path)} ({sha}) "
-                         f"in {repo_full_name}: {str(e)}", "error")
-                continue
+                ghcc.log(f"{repo_full_name}: Could not parse decompiled code for "
+                         f"{str(code_path)} ({sha}): {str(e)}", "error")
+                has_error = True
 
-            decompiled_func_asts = extractor.find_functions(decompiled_ast)
-            for func_name in decompiled_funcs.keys():
-                original_func_ast = function_asts[func_name]
-                if func_name not in decompiled_func_asts:
-                    # Maybe there's other Hexrays-renamed functions that we didn't fix, just ignore them.
-                    continue
-                decompiled_func_ast = decompiled_func_asts[func_name]
-                original_code = generator.visit(original_func_ast)
-                decompiled_code = generator.visit(decompiled_func_ast)
-                original_ast_json = ast_to_json(original_func_ast)
-                decompiled_ast_json = ast_to_json(decompiled_func_ast)
-                matched_func = MatchedFunction(
-                    file_path=path, binary_hash=sha, func_name=func_name,
-                    original_code=original_code, decompiled_code=decompiled_code,
-                    original_ast_json=original_ast_json, decompiled_ast_json=decompiled_ast_json)
-                matched_functions.append(matched_func)
+                # We don't have ASTs for decompiled functions, but we can still dump the code.
+                # Use the dummy typedefs to extract functions.
+                code_lines = code_to_parse.split("\n")
+                func_begin_end: Dict[str, List[Optional[int]]] = defaultdict(lambda: [None, None])
+                for idx, line in enumerate(code_lines):
+                    name, is_begin = replacer.extract_func_name(line)
+                    if name is not None:
+                        func_begin_end[name][0 if is_begin else 1] = idx
+                for func_name, (begin, end) in func_begin_end.items():
+                    if begin is not None and end is not None and func_name in function_asts:
+                        decompiled_func_code = lexer.lex("\n".join(code_lines[(begin + 1):end]))
+                        original_func_ast = function_asts[func_name]
+                        original_func_code = lexer.lex(generator.visit(original_func_ast))
+                        original_ast_json = ast_to_json(original_func_ast)
+                        matched_func = MatchedFunction(
+                            file_path=path, binary_hash=sha, func_name=func_name,
+                            original_code=original_func_code, decompiled_code=decompiled_func_code,
+                            original_ast_json=original_ast_json, decompiled_ast_json=None)
+                        matched_functions.append(matched_func)
 
-    ghcc.log(f"{repo_full_name}: "
+            else:
+                # We've successfully parsed decompiled code.
+                decompiled_func_asts = extractor.find_functions(decompiled_ast)
+                for func_name in decompiled_funcs.keys():
+                    original_func_ast = function_asts[func_name]
+                    if func_name not in decompiled_func_asts:
+                        # Maybe there's other Hexrays-renamed functions that we didn't fix, just ignore them.
+                        continue
+                    decompiled_func_ast = decompiled_func_asts[func_name]
+                    original_func_code = lexer.lex(generator.visit(original_func_ast))
+                    decompiled_func_code = lexer.lex(generator.visit(decompiled_func_ast))
+                    original_ast_json = ast_to_json(original_func_ast)
+                    decompiled_ast_json = ast_to_json(decompiled_func_ast)
+                    matched_func = MatchedFunction(
+                        file_path=path, binary_hash=sha, func_name=func_name,
+                        original_code=original_func_code, decompiled_code=decompiled_func_code,
+                        original_ast_json=original_ast_json, decompiled_ast_json=decompiled_ast_json)
+                    matched_functions.append(matched_func)
+    # Cleanup the folders; if errors occurred, keep the preprocessed code.
+    if has_error:
+        shutil.rmtree(repo_src_path)
+    else:
+        shutil.rmtree(repo_dir)
+
+
+    end_time = time.time()
+    funcs_without_asts = sum(matched_func.decompiled_ast_json is None for matched_func in matched_functions)
+    status = "success" if not has_error else ("warning" if len(matched_functions) > 0 else "error")
+    ghcc.log(f"[{end_time - start_time:6.2f}s] "
+             f"{repo_full_name}: "
              f"Files found: {files_found}/{total_files}, "
-             f"functions matched: {len(matched_functions)}/{functions_found}", "success")
+             f"functions matched: {len(matched_functions)}/{functions_found} "
+             f"({funcs_without_asts} w/o ASTs)", status, force_console=True)
     return Result(repo_owner=repo_info.repo_owner, repo_name=repo_info.repo_name,
-                  matched_functions=matched_functions, files_found=files_found, functions_found=functions_found)
+                  matched_functions=matched_functions,
+                  files_found=files_found, functions_found=functions_found, funcs_without_asts=funcs_without_asts)
 
 
 MAX_TYPE_FIX_RETRIES = 10
 PARSE_ERROR_REGEX = re.compile(r'.*?:(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)')
 
 
-def parse_decompiled_code(parser: pycparser.CParser, code_to_parse: str) -> ASTNode:
-    added_types = set()
-    lexer: Optional[pycparser.c_lexer.CLexer] = None
+def parse_decompiled_code(lexer: Lexer, parser: CParser, code_to_parse: str) -> ASTNode:
+    added_types: Set[str] = set()
     for _ in range(MAX_TYPE_FIX_RETRIES):
         try:
             decompiled_ast = parser.parse(code_to_parse)
@@ -361,17 +476,8 @@ def parse_decompiled_code(parser: pycparser.CParser, code_to_parse: str) -> ASTN
                 raise
             before_token = ghcc.utils.remove_prefix(error_match.group("msg"), "before: ")
             error_line = code_to_parse.split("\n")[int(error_match.group("line")) - 1]
-            if lexer is None:
-                lexer = pycparser.c_lexer.CLexer(None, lambda: None, lambda: None, lambda _: False)
-                lexer.build()
-            lexer.input(error_line)
             error_pos = int(error_match.group("col")) - 1
-            tokens = []
-            while True:
-                token = lexer.token()
-                if token is None:
-                    break
-                tokens.append(token)
+            tokens = lexer.lex_tokens(error_line)
             try:
                 error_token_idx = next(
                     idx for idx, token in enumerate(tokens)
@@ -383,7 +489,8 @@ def parse_decompiled_code(parser: pycparser.CParser, code_to_parse: str) -> ASTN
                 #      `int func(const token var)`
                 #    Replacing `const` with any combination of type qualifiers also works.
                 if (error_token_idx > 0 and
-                        tokens[error_token_idx - 1].type in ["CONST", "VOLATILE", "RESTRICT"]):
+                        tokens[error_token_idx - 1].type in ["CONST", "VOLATILE", "RESTRICT",
+                                                             "__CONST", "__RESTRICT", "__EXTENSION__"]):
                     type_token = tokens[error_token_idx]
                 else:
                     type_token = next(
@@ -402,13 +509,8 @@ def parse_decompiled_code(parser: pycparser.CParser, code_to_parse: str) -> ASTN
     return decompiled_ast
 
 
-def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: Optional[str] = None,
-               cache_path: Optional[str] = None) -> Iterator[RepoInfo]:
-    db_entries: Set[Tuple[str, str]] = {
-        (entry["repo_owner"], entry["repo_name"])
-        for entry in db.collection.find()  # getting stuff in batch is much faster
-    }
-
+def _iter_repos(db_entries: Set[Tuple[str, str]], max_count: Optional[int] = None, skip_to: Optional[str] = None,
+                cache_path: Optional[str] = None) -> Iterator[RepoInfo]:
     with contextlib.closing(ghcc.RepoDB()) as repo_db, contextlib.closing(ghcc.BinaryDB()) as binary_db:
         @ghcc.utils.cache(cache_path, name="repo binary info")
         def _get_repo_binaries_info() -> Dict[Tuple[str, str], Set[str]]:
@@ -419,7 +521,7 @@ def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: O
                     repo_binaries[entry["repo_owner"], entry["repo_name"]].add(entry["sha"])
             return repo_binaries
 
-        # repo_binaries = _get_repo_binaries_info()
+        repo_binaries = _get_repo_binaries_info()
         repo_entries: Iterator[ghcc.RepoDB.Entry] = repo_db.collection.find()
         if skip_to is not None:
             skip_to_repo = tuple(skip_to.split("/"))
@@ -454,6 +556,27 @@ def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: O
                 break
 
 
+class DBStats(NamedTuple):
+    repo_count: int
+    func_count: int
+    func_without_ast_count: int
+
+
+def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: Optional[str] = None,
+               cache_path: Optional[str] = None) -> Tuple[Iterator[RepoInfo], DBStats]:
+    repo_count = func_count = func_without_ast_count = 0
+    db_entries: Set[Tuple[str, str]] = set()
+    for entry in db.collection.find():
+        db_entries.add((entry["repo_owner"], entry["repo_name"]))
+        repo_count += 1
+        func_count += entry["funcs_matched"]
+        func_without_ast_count += entry["funcs_matched_without_ast"]
+
+    iterator = _iter_repos(db_entries, max_count, skip_to, cache_path)
+    stats = DBStats(repo_count, func_count, func_without_ast_count)
+    return iterator, stats
+
+
 def main():
     if not ghcc.utils.verify_docker_image(verbose=True):
         exit(1)
@@ -463,6 +586,8 @@ def main():
         ghcc.utils.register_ipython_excepthook()
         if args.n_procs == 0:
             globals()['match_functions'] = match_functions.__wrapped__
+    if not args.verbose:
+        ghcc.set_logging_level("quiet")
 
     ghcc.log("Running with arguments:\n" + args.to_string(), force_console=True)
 
@@ -475,13 +600,16 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     with ghcc.utils.safe_pool(args.n_procs, closing=[db]) as pool:
-        iterator = iter_repos(db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path)
+        iterator, stats = iter_repos(
+            db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path)
         match_fn: Callable[[RepoInfo], Result] = functools.partial(
             match_functions,
             archive_folder=args.archive_dir, temp_folder=args.temp_dir, decompile_folder=args.decompile_dir,
-            use_fake_libc_headers=args.use_fake_libc_headers)
+            use_fake_libc_headers=args.use_fake_libc_headers, preprocess_timeout=args.preprocess_timeout)
 
-        repo_count = 0
+        repo_count = stats.repo_count
+        func_count = stats.func_count
+        func_without_ast_count = stats.func_without_ast_count
         for result in pool.imap_unordered(match_fn, iterator):
             if result is None:
                 # Exception occurred.
@@ -498,11 +626,15 @@ def main():
             if args.write_db:
                 db.add_repo(result.repo_owner, result.repo_name,
                             files_found=result.files_found, funcs_found=result.functions_found,
-                            funcs_matched=len(result.matched_functions))
+                            funcs_matched=len(result.matched_functions),
+                            funcs_matched_without_ast=result.funcs_without_asts)
 
             repo_count += 1
+            func_count += len(result.matched_functions)
+            func_without_ast_count += result.funcs_without_asts
             if repo_count % 100 == 0:
-                ghcc.log(f"Processed {repo_count} repositories", force_console=True)
+                ghcc.log(f"Processed {repo_count} repositories, {func_count} functions matched "
+                         f"({func_without_ast_count} w/o AST)", force_console=True)
 
 
 if __name__ == '__main__':
