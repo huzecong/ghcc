@@ -16,17 +16,33 @@ import argtyped
 import pycparser
 import tqdm
 from argtyped import Switch
+from pycparser import c_ast
 from pycparser.c_lexer import CLexer
-from pycparser.c_parser import CParser
+from pycparser.c_parser import CParser as CParserBuggy
 from pycparser.c_generator import CGenerator
 from pycparser.c_ast import Node as ASTNode
 # from pycparserext.ext_c_parser import GnuCParser as CParser
 # from pycparserext.ext_c_generator import GnuCGenerator as CGenerator
 
 import ghcc
-from main import exception_handler
 
 FAKE_LIBC_PATH = str((Path(ghcc.__file__).parent.parent / "scripts" / "fake_libc_include").absolute())
+
+
+class CParser(CParserBuggy):
+    def p_offsetof_member_designator(self, p):
+        """ offsetof_member_designator : identifier
+                                         | offsetof_member_designator PERIOD identifier
+                                         | offsetof_member_designator LBRACKET expression RBRACKET
+        """
+        if len(p) == 2:
+            p[0] = p[1]
+        elif len(p) == 4:
+            p[0] = c_ast.StructRef(p[1], p[2], p[3], p[1].coord)
+        elif len(p) == 5:
+            p[0] = c_ast.ArrayRef(p[1], p[3], p[1].coord)
+        else:
+            raise NotImplementedError("Unexpected parsing state. len(p): %u" % len(p))
 
 
 class LexToken:  # stub
@@ -55,6 +71,7 @@ class Arguments(argtyped.Arguments):
 
 
 class RepoInfo(NamedTuple):
+    idx: int
     repo_owner: str
     repo_name: str
     makefiles: Dict[str, Dict[str, str]]  # make_dir -> (binary_path -> binary_sha256)
@@ -63,10 +80,10 @@ class RepoInfo(NamedTuple):
 class FunctionExtractor:
     r"""An AST visitor that extracts all function definitions from an AST."""
 
-    class FuncDefVisitor(pycparser.c_ast.NodeVisitor):
+    class FuncDefVisitor(c_ast.NodeVisitor):
         func_def_asts: Dict[str, ASTNode]
 
-        def visit_FuncDef(self, node: pycparser.c_ast.FuncDef):
+        def visit_FuncDef(self, node: c_ast.FuncDef):
             func_name = node.decl.name
             self.func_def_asts[func_name] = node
 
@@ -96,7 +113,7 @@ class FunctionReplacer(CGenerator):
         super().__init__()
         self._func_defs = func_defs
 
-    def visit_FuncDef(self, node: pycparser.c_ast.FuncDef):
+    def visit_FuncDef(self, node: c_ast.FuncDef):
         func_name = node.decl.name
         if func_name in self._func_defs:
             # Add dummy typedefs around the function code, so we can still extract raw code even if we can't parse it.
@@ -260,6 +277,11 @@ typedef int (*__compar_fn_t)(const void *, const void *);
 """
 
 
+def exception_handler(e, repo_info: RepoInfo):
+    ghcc.utils.log_exception(e, f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}",
+                             force_console=True)
+
+
 @ghcc.utils.exception_wrapper(exception_handler)
 def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, decompile_folder: str,
                     use_fake_libc_headers: bool = True, preprocess_timeout: Optional[int] = None) -> Result:
@@ -289,8 +311,13 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
         (repo_dir / repo_folder_name).rename(repo_src_path)
     else:
         # Clone repo
+        if repo_src_path.exists():
+            shutil.rmtree(repo_src_path)
         ret = ghcc.clone(repo_info.repo_owner, repo_info.repo_name, clone_folder=str(repo_dir), folder_name="src")
-        assert ret.error_type in [None, ghcc.CloneErrorType.SubmodulesFailed]
+        if ret.error_type not in [None, ghcc.CloneErrorType.SubmodulesFailed]:
+            ghcc.log(f"Failed to clone {repo_full_name}: error type {ret.error_type}", "error")
+            # Return a dummy result so this repo is ignored in the future.
+            return Result(repo_info.repo_owner, repo_info.repo_name, [], 0, 0, 0)
 
     # Write makefile info to pickle
     with (repo_binary_dir / "makefiles.pkl").open("wb") as f_pkl:
@@ -305,6 +332,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     makefiles = ghcc.docker_batch_compile(
         str(repo_binary_dir), str(repo_src_path), compile_timeout=preprocess_timeout,
         gcc_override_flags=gcc_flags, use_makefile_info_pkl=True, directory_mapping=directory_mapping,
+        user_id=(repo_info.idx % 10000) + 30000,  # user IDs 30000 ~ 39999
         exception_log_fn=functools.partial(exception_handler, repo_info=repo_info))
 
     parser = CParser()
@@ -441,15 +469,16 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                         original_ast_json=original_ast_json, decompiled_ast_json=decompiled_ast_json)
                     matched_functions.append(matched_func)
     # Cleanup the folders; if errors occurred, keep the preprocessed code.
-    if has_error:
+    status = ("success" if not has_error and len(matched_functions) > 0 else
+              ("warning" if not has_error or len(matched_functions) > 0 else
+               "error"))
+    if status == "success":
         shutil.rmtree(repo_src_path)
     else:
         shutil.rmtree(repo_dir)
 
-
     end_time = time.time()
     funcs_without_asts = sum(matched_func.decompiled_ast_json is None for matched_func in matched_functions)
-    status = "success" if not has_error else ("warning" if len(matched_functions) > 0 else "error")
     ghcc.log(f"[{end_time - start_time:6.2f}s] "
              f"{repo_full_name}: "
              f"Files found: {files_found}/{total_files}, "
@@ -550,7 +579,7 @@ def _iter_repos(db_entries: Set[Tuple[str, str]], max_count: Optional[int] = Non
             if len(makefiles) == 0:
                 continue
 
-            yield RepoInfo(entry['repo_owner'], entry['repo_name'], makefiles)
+            yield RepoInfo(index, entry['repo_owner'], entry['repo_name'], makefiles)
             index += 1
             if max_count is not None and index >= max_count:
                 break
@@ -586,9 +615,10 @@ def main():
         ghcc.utils.register_ipython_excepthook()
         if args.n_procs == 0:
             globals()['match_functions'] = match_functions.__wrapped__
-    if not args.verbose:
-        ghcc.set_logging_level("quiet")
 
+    if not args.verbose:
+        ghcc.set_logging_level("quiet", console=True, file=False)
+    ghcc.set_log_file(args.log_file)
     ghcc.log("Running with arguments:\n" + args.to_string(), force_console=True)
 
     if os.path.exists(args.temp_dir):

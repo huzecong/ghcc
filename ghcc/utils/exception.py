@@ -32,14 +32,14 @@ def register_ipython_excepthook() -> None:
     sys.excepthook = excepthook
 
 
-def log_exception(e, user_msg: Optional[str] = None):
+def log_exception(e, user_msg: Optional[str] = None, **kwargs):
     exc_msg = f"<{e.__class__.__qualname__}> {e}"
     if user_msg is not None:
         exc_msg = f"{user_msg}: {exc_msg}"
     try:
         if not (isinstance(e, subprocess.CalledProcessError) and e.output is not None):
-            log(traceback.format_exc(), "error")
-        log(exc_msg, "error")
+            log(traceback.format_exc(), "error", **kwargs)
+        log(exc_msg, "error", **kwargs)
     except Exception as log_e:
         print(exc_msg)
         print(f"Another exception occurred while logging: <{log_e.__class__.__qualname__}> {log_e}")

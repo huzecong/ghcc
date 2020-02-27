@@ -77,11 +77,15 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
     try:
         yield pool  # type: ignore
     except KeyboardInterrupt:
+        log("Gracefully shutting down...", "warning", force_console=True)
         print("Press Ctrl-C again to force terminate...")
+        try:
+            pool.join()
+        except KeyboardInterrupt:
+            pass
     except Exception as e:
         print(traceback.format_exc())
     finally:
-        log("Gracefully shutting down...", "warning", force_console=True)
         close_fn()
         if isinstance(pool, multiprocessing.pool.Pool):
             # Only required in multiprocessing scenario

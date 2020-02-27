@@ -92,9 +92,9 @@ def run_command(args: Union[str, List[str]], *,
                                  timeout=timeout, env=env, cwd=cwd, **kwargs)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             f.seek(0)
-            output = f.read(MAX_OUTPUT_LENGTH + 1)  # truncate if longer than 8192 characters
-            if len(output) > MAX_OUTPUT_LENGTH:
-                output = output[:MAX_OUTPUT_LENGTH] + b"\n*** (remaining output truncated) ***"
+            output = f.read()
+            if len(output) > MAX_OUTPUT_LENGTH:  # truncate if longer than 8192 characters
+                output = b"*** (previous output truncated) ***\n" + output[-MAX_OUTPUT_LENGTH:]
             if ignore_errors:
                 return_code = e.returncode if isinstance(e, subprocess.CalledProcessError) else -32768
                 return CommandResult(args, return_code, output)
