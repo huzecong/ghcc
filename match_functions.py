@@ -18,7 +18,7 @@ import tqdm
 from argtyped import Switch
 from pycparser import c_ast
 from pycparser.c_lexer import CLexer
-from pycparser.c_parser import CParser as CParserBuggy
+from pycparser.c_parser import CParser
 from pycparser.c_generator import CGenerator
 from pycparser.c_ast import Node as ASTNode
 # from pycparserext.ext_c_parser import GnuCParser as CParser
@@ -27,22 +27,6 @@ from pycparser.c_ast import Node as ASTNode
 import ghcc
 
 FAKE_LIBC_PATH = str((Path(ghcc.__file__).parent.parent / "scripts" / "fake_libc_include").absolute())
-
-
-class CParser(CParserBuggy):
-    def p_offsetof_member_designator(self, p):
-        """ offsetof_member_designator : identifier
-                                         | offsetof_member_designator PERIOD identifier
-                                         | offsetof_member_designator LBRACKET expression RBRACKET
-        """
-        if len(p) == 2:
-            p[0] = p[1]
-        elif len(p) == 4:
-            p[0] = c_ast.StructRef(p[1], p[2], p[3], p[1].coord)
-        elif len(p) == 5:
-            p[0] = c_ast.ArrayRef(p[1], p[3], p[1].coord)
-        else:
-            raise NotImplementedError("Unexpected parsing state. len(p): %u" % len(p))
 
 
 class LexToken:  # stub

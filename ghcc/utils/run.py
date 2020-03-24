@@ -1,6 +1,6 @@
 import subprocess
 import tempfile
-from typing import Dict, List, NamedTuple, Optional, Union
+from typing import Dict, List, NamedTuple, Optional, TypeVar, Union
 
 import tenacity
 
@@ -30,7 +30,10 @@ class CommandResult(NamedTuple):
     captured_output: Optional[bytes]
 
 
-def error_wrapper(err: Exception) -> Exception:
+ExcType = TypeVar('ExcType', bound=Exception)
+
+
+def error_wrapper(err: ExcType) -> ExcType:
     r"""Wrap exceptions raised in `subprocess` to output captured output by default.
     """
     if not isinstance(err, (subprocess.CalledProcessError, subprocess.TimeoutExpired)):
@@ -54,7 +57,7 @@ def error_wrapper(err: Exception) -> Exception:
     new_type = type(err_type.__name__, (err_type,), {"__str__": __str__})
 
     err.__class__ = new_type
-    return err
+    return err  # type: ignore
 
 
 MAX_OUTPUT_LENGTH = 8192

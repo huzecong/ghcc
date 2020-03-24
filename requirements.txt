@@ -1,7 +1,7 @@
 argtyped
 mypy_extensions
 psutil
-git+git://github.com/eliben/pycparser.git@1166ea11785ce12cdfd5e8bf8b3a69b5e6b76f9c
+pycparser >= 2.20
 pymongo
 tenacity
 termcolor

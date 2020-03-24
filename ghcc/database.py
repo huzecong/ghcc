@@ -2,7 +2,7 @@ import abc
 import json
 import os
 import sys
-from typing import Any, Dict, Iterator, List, Optional, Type
+from typing import Any, Dict, Iterator, List, Optional, Set, Type
 
 import pymongo
 from mypy_extensions import TypedDict
@@ -90,7 +90,7 @@ class Database(abc.ABC):
         del self.collection
         self.client.close()
 
-    def safe_iter(self, batch_size: int = 1000, static: bool = False) -> Iterator['Entry']:
+    def safe_iter(self, batch_size: int = 1000, static: bool = False) -> Iterator['Entry']:  # type: ignore
         r"""Safely iterate over all documents. The normal way (``for entry in collection.find()``) result in cursor
         timeout if the iteration takes too long, and it's unavoidable unless configured on the server.
 
@@ -113,7 +113,7 @@ class Database(abc.ABC):
         if "$unique" in index:
             del index["$unique"]
 
-        yielded_ids = set()
+        yielded_ids: Set[Any] = set()
         prev_index = 0
         while True:
             cursor = self.collection.find().sort(list(index.items())).skip(prev_index).limit(batch_size)
