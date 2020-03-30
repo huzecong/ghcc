@@ -4,7 +4,7 @@ import os
 import threading
 import traceback
 import types
-from typing import Any, Callable, Iterator, List, Optional, TextIO, TypeVar, Union
+from typing import Any, Callable, Iterator, List, Optional, TextIO, TypeVar
 
 import psutil
 
@@ -32,6 +32,9 @@ class Pool:
     def imap_unordered(self, fn: Callable[[T], R], iterator: Iterator[T]) -> Iterator[R]:
         yield from map(fn, iterator)
 
+    map = imap_unordered
+    imap = imap_unordered
+
     @staticmethod
     def _no_op(self, *args, **kwargs):
         pass
@@ -40,12 +43,8 @@ class Pool:
         return types.MethodType(Pool._no_op, self)  # no-op for everything else
 
 
-PoolType = Union[Pool, multiprocessing.pool.Pool]
-
-
 @contextlib.contextmanager
-def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwargs) \
-        -> Iterator[multiprocessing.pool.Pool]:
+def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwargs) -> Iterator[Pool]:
     r"""A wrapper over ``multiprocessing.Pool`` that gracefully handles exceptions.
 
     :param processes: The number of worker processes to run. A value of 0 means single threaded execution.
@@ -70,12 +69,12 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
     pool = Pool(processes, *args, **kwargs)
     if processes == 0:
         # Don't swallow exceptions in the single-process case.
-        yield pool  # type: ignore
+        yield pool
         close_fn()
         return
 
     try:
-        yield pool  # type: ignore
+        yield pool
     except KeyboardInterrupt:
         log("Gracefully shutting down...", "warning", force_console=True)
         print("Press Ctrl-C again to force terminate...")

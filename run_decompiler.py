@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 from enum import Enum, auto
 from pathlib import Path
-from typing import Dict, Iterator, NamedTuple, Optional, Tuple
+from typing import Dict, Iterator, NamedTuple, Optional, Tuple, Callable
 
 import argtyped
 import tqdm
@@ -225,7 +225,7 @@ def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, BinaryInfo
     return _compute_binary_mapping
 
 
-def main():
+def main() -> None:
     if args.n_procs == 0:
         # Only do this on the single-threaded case.
         ghcc.utils.register_ipython_excepthook()
@@ -249,10 +249,9 @@ def main():
     db = ghcc.BinaryDB()
 
     with ghcc.utils.safe_pool(args.n_procs, closing=[db]) as pool:
-        decompile_fn = functools.partial(
+        decompile_fn: Callable[[BinaryInfo], DecompilationResult] = functools.partial(
             decompile, output_dir=args.output_dir, binary_dir=args.binaries_dir, timeout=args.timeout)
         for result in pool.imap_unordered(decompile_fn, iter_binaries(db, binaries)):
-            result: DecompilationResult
             file_count += 1
             if result is not None:
                 db.add_binary(result.info["repo_owner"], result.info["repo_name"],

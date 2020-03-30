@@ -590,7 +590,7 @@ def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: O
     return iterator, stats
 
 
-def main():
+def main() -> None:
     if not ghcc.utils.verify_docker_image(verbose=True):
         exit(1)
 
