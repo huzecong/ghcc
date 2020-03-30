@@ -90,7 +90,7 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
             # Only required in multiprocessing scenario
             pool.close()
             pool.terminate()
-            kill_proc_tree(os.getpid())  # commit suicide
+            # kill_proc_tree(os.getpid())  # commit suicide
 
 
 class MultiprocessingFileWriter(TextIO):

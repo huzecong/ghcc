@@ -85,7 +85,7 @@ def _check_elf_fn(directory: str, file: str) -> bool:
     """
     path = os.path.join(directory, file)
     output = subprocess.check_output(["file", path], timeout=10)
-    output = output[len(file):]  # first part is file name
+    output = output[len(path):]  # first part is file name
     return ELF_FILE_TAG in output
 
 

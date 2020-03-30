@@ -86,6 +86,11 @@ class Database(abc.ABC):
                 # This check is required because `create_index` seems not idempotent, although it should be.
                 self.collection.create_index(list(new_index.items()), unique=unique, background=True)
 
+    def count(self, estimate: bool = True) -> int:
+        if estimate:
+            return self.collection.estimated_document_count()
+        return self.collection.count_documents({})
+
     def close(self) -> None:
         del self.collection
         self.client.close()
