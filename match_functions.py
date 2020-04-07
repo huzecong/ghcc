@@ -222,27 +222,17 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             replaced_code = replacer.visit(ast)
 
             # Obtain AST for decompiled code by parsing it again.
-            with tempfile.TemporaryDirectory() as temp_dir:
-                code_to_preprocess = DECOMPILED_CODE_HEADER + "\n" + replaced_code
-                input_path = os.path.join(temp_dir, "test.c")
-                output_path = os.path.join(temp_dir, "test.prep.c")
-                with open(input_path, "w") as f:
-                    f.write(code_to_preprocess)
-                compile_ret = ghcc.utils.run_command(
-                    ["gcc", "-E", "-I" + ghcc.parse.FAKE_LIBC_PATH, "-o", output_path, input_path], ignore_errors=True)
-                if compile_ret.return_code != 0:
-                    msg = (f"{repo_full_name}: GCC return value nonzero for decompiled code of "
-                           f"{str(code_path)} ({sha})")
-                    if compile_ret.captured_output is not None:
-                        msg += ":\n" + compile_ret.captured_output.decode("utf-8")
-                    ghcc.log(msg, "error")
-                    has_error = True
-                    continue
-
-                with open(output_path, "r") as f:
-                    code_to_parse = f.read()
-                # Remove line control macros so we know where errors occur
-                code_to_parse = line_control_regex.sub("", code_to_parse)
+            code_to_preprocess = DECOMPILED_CODE_HEADER + "\n" + replaced_code
+            try:
+                code_to_parse = ghcc.parse.preprocess(code_to_preprocess)
+            except ghcc.parse.PreprocessError as e:
+                msg = (f"{repo_full_name}: GCC return value nonzero for decompiled code of "
+                       f"{str(code_path)} ({sha})")
+                if len(e.args) > 0:
+                    msg += ":\n" + str(e)
+                ghcc.log(msg, "error")
+                has_error = True
+                continue
 
             def generate_output(func_ast: ASTNode) -> Tuple[ghcc.parse.JSONNode, List[str]]:
                 func_code = generator.visit(func_ast)
@@ -254,7 +244,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 for tok in lexer.lex_tokens(func_code):
                     func_tokens.append(tok.value)
                     token_coords.append(ghcc.parse.TokenCoord(tok.lineno, tok.lexpos - line_start[tok.lineno - 1]))
-                ast_json = ghcc.parse.ast_to_json(func_ast, token_coords)
+                ast_json = ghcc.parse.ast_to_dict(func_ast, token_coords)
                 return ast_json, func_tokens
 
             try:

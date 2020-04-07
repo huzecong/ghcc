@@ -1,3 +1,8 @@
+"""
+Utilities for serialization and deserialization of ``pycparser`` ASTs.
+Adapted from ``pycparser`` example ``c_json.py``.
+"""
+
 import functools
 import re
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
@@ -8,7 +13,8 @@ from pycparser.plyparser import Coord
 from .lexer import TokenCoord
 
 __all__ = [
-    "ast_to_json",
+    "ast_to_dict",
+    "dict_to_ast",
     "JSONNode",
 ]
 
@@ -18,6 +24,11 @@ JSONNode = Dict[str, Any]
 
 RE_CHILD_ARRAY = re.compile(r'(.*)\[(.*)\]')
 RE_INTERNAL_ATTR = re.compile('__.*__')
+
+AVAILABLE_NODES: Dict[str, Type[ASTNode]] = {klass.__name__: klass for klass in ASTNode.__subclasses__()}
+NODE_TYPE_ATTRIBUTE = "_nodetype"
+CHILDREN_ATTRIBUTE = "children"
+TOKEN_POS_ATTRIBUTE = "coord"
 
 
 @functools.lru_cache()
@@ -31,18 +42,20 @@ def child_attrs_of(klass: Type[ASTNode]):
     return all_attrs - non_child_attrs
 
 
-def ast_to_json(root: ASTNode, tokens: List[TokenCoord]) -> JSONNode:
-    r"""Recursively convert an ast into dict representation. Replace position (``coord``) with the index in the lexed
-    token list.
+def ast_to_dict(root: ASTNode, tokens: Optional[List[TokenCoord]] = None) -> JSONNode:
+    r"""Recursively convert an AST into dictionary representation.
 
-    Adapted from ``pycparser`` example ``c_json.py``.
+    :param root: The AST to convert.
+    :param tokens: A list of lexed token coordinates. If specified, will replace node position (``coord``) with the
+        index in the lexed token list.
     """
-    n_lines = tokens[-1].line
-    line_range: List[List[int]] = [[-1, -1] for _ in range(n_lines + 1)]  # [(l, r)]
-    for idx, tok in enumerate(tokens):
-        if line_range[tok.line][0] == -1:
-            line_range[tok.line][0] = idx
-        line_range[tok.line][1] = idx
+    if tokens is not None:
+        n_lines = tokens[-1].line
+        line_range: List[List[int]] = [[-1, -1] for _ in range(n_lines + 1)]  # [(l, r)]
+        for idx, tok in enumerate(tokens):
+            if line_range[tok.line][0] == -1:
+                line_range[tok.line][0] = idx
+            line_range[tok.line][1] = idx
 
     def find_token(line: int, column: int) -> int:
         l, r = line_range[line]
@@ -60,19 +73,20 @@ def ast_to_json(root: ASTNode, tokens: List[TokenCoord]) -> JSONNode:
         result = {}
 
         # Metadata
-        result['_nodetype'] = klass.__name__
+        result[NODE_TYPE_ATTRIBUTE] = klass.__name__
 
         # Local node attributes
         for attr in klass.attr_names:
             result[attr] = getattr(node, attr)
 
         # Coord object
-        if node.coord is not None and node.coord.line > 0:  # some nodes have coordinates of (0, 1), which is invalid
+        if (tokens is not None and node.coord is not None and
+                node.coord.line > 0):  # some nodes have coordinates of (0, 1), which is invalid
             coord: Coord = node.coord
             pos = find_token(coord.line, coord.column)
-            result['coord'] = pos
+            result[TOKEN_POS_ATTRIBUTE] = pos
         else:
-            result['coord'] = None
+            result[TOKEN_POS_ATTRIBUTE] = None
 
         # node_name = (" " * (2 * depth) + klass.__name__).ljust(35)
         # if node.coord is not None:
@@ -103,9 +117,32 @@ def ast_to_json(root: ASTNode, tokens: List[TokenCoord]) -> JSONNode:
         for child_attr in child_attrs_of(klass):
             if child_attr not in children:
                 children[child_attr] = None
-        result["children"] = children
+        result[CHILDREN_ATTRIBUTE] = children
 
         return result
 
     ast_json = traverse(root)
     return ast_json
+
+
+def dict_to_ast(node_dict: JSONNode) -> ASTNode:
+    r"""Recursively build an AST from dictionary representation. Coordinate information is discarded.
+    """
+    class_name = node_dict[NODE_TYPE_ATTRIBUTE]
+    klass = AVAILABLE_NODES[class_name]
+
+    # Create a new dict containing the key-value pairs which we can pass to node constructors.
+    kwargs = {'coord': None}
+    children: Dict[str, MaybeList[JSONNode]] = node_dict[CHILDREN_ATTRIBUTE]
+    for name, child in children.items():
+        if isinstance(child, list):
+            kwargs[name] = [dict_to_ast(item) for item in child]
+        else:
+            kwargs[name] = dict_to_ast(child) if child is not None else None
+
+    for key, value in node_dict.items():
+        if key in [NODE_TYPE_ATTRIBUTE, CHILDREN_ATTRIBUTE, TOKEN_POS_ATTRIBUTE]:
+            continue
+        kwargs[key] = value  # must be primitive attributes
+
+    return klass(**kwargs)

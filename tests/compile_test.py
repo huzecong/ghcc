@@ -41,14 +41,14 @@ class CompileTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
-    def _test_debug_info(self, elf_paths: List[str]):
+    def _test_debug_info(self, elf_paths: List[str]) -> None:
         # Check if binaries contain debugging information (whether mock GCC works).
         for elf in elf_paths:
             # NOTE: This doesn't work under macOS.
             ret = ghcc.utils.run_command(f"objdump --syms {elf} | grep debug | wc -l", return_output=True, shell=True)
             assert int(ret.captured_output.decode('utf-8')) > 0
 
-    def _test_compile(self, compile_func):
+    def _test_compile(self, compile_func) -> None:
         # Find Makefiles.
         makefiles = ghcc.find_makefiles(self.directory)
         self.assertEqual([self.directory], makefiles)
@@ -61,15 +61,15 @@ class CompileTest(unittest.TestCase):
         elf_paths = [os.path.join(self.directory, elf) for elf in self.target_elfs]
         self._test_debug_info(elf_paths)
 
-    def test_compile(self):
+    def test_compile(self) -> None:
         # NOTE: This doesn't work under macOS.
         self._test_compile(ghcc.unsafe_make)
 
-    def test_docker_compile(self):
+    def test_docker_compile(self) -> None:
         ghcc.utils.verify_docker_image()
         self._test_compile(ghcc.docker_make)
 
-    def test_docker_batch_compile(self):
+    def test_docker_batch_compile(self) -> None:
         ghcc.utils.verify_docker_image()
         binary_dir = os.path.join(self.tempdir.name, "_bin")
         os.makedirs(binary_dir)
@@ -80,7 +80,7 @@ class CompileTest(unittest.TestCase):
         elf_paths = [os.path.join(binary_dir, file) for file in result[0]["sha256"]]
         self._test_debug_info(elf_paths)
 
-    def test_gcc_library_log(self):
+    def test_gcc_library_log(self) -> None:
         from ghcc.compile import MOCK_PATH
         library_log_path = os.path.join(self.tempdir.name, "libraries.txt")
         env = {

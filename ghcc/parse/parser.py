@@ -1,4 +1,6 @@
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
@@ -10,12 +12,16 @@ from pycparser.c_parser import CParser
 
 from .lexer import LexerWrapper
 from ..utils.fs import remove_prefix
+from ..utils.run import run_command
 
 __all__ = [
     "FAKE_LIBC_PATH",
     "FunctionExtractor",
     "FunctionReplacer",
     "parse_decompiled_code",
+    "PreprocessError",
+    "preprocess",
+    "preprocess_file",
 ]
 
 FAKE_LIBC_PATH = str((Path(__file__).parent.parent.parent / "scripts" / "fake_libc_include").absolute())
@@ -72,7 +78,7 @@ class FunctionReplacer(CGenerator):
     def extract_func_name(self, line: str) -> Tuple[Optional[str], bool]:
         r"""Extracts the function name from a function boundary marker.
 
-        :param line:
+        :param line: The line of code containing the boundary marker.
         :return: A tuple containing the function name and a ``bool`` indicating whether the marker indicates the
             beginning of a function. If the line is not a boundary marker, or the function name is not recognized,
             ``None`` is returned instead of the extracted name.
@@ -88,6 +94,55 @@ class FunctionReplacer(CGenerator):
         if func_name is not None and func_name in self._func_defs:
             return func_name, is_begin
         return None, False
+
+
+class PreprocessError(Exception):
+    pass
+
+
+LINE_CONTROL_REGEX = re.compile(r'^#[^\n]*$', flags=re.MULTILINE)
+
+
+def _preprocess(input_path: str, output_path: str) -> str:
+    compile_ret = run_command(["gcc", "-E", "-I" + FAKE_LIBC_PATH, "-o", output_path, input_path], ignore_errors=True)
+
+    if compile_ret.return_code != 0:
+        if compile_ret.captured_output is not None:
+            raise PreprocessError(compile_ret.captured_output.decode("utf-8"))
+        raise PreprocessError
+
+    with open(output_path, "r") as f:
+        preprocessed_code = f.read()
+    # Remove line control macros so we can programmatically locate errors.
+    preprocessed_code = LINE_CONTROL_REGEX.sub("", preprocessed_code)
+    return preprocessed_code
+
+
+def preprocess(code: str) -> str:
+    r"""Run preprocessor on code snippet by invoking GCC with ``-E`` flag.
+
+    :raises PreprocessError: When GCC returns non-zero code.
+
+    :return: The preprocessed code.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        input_path = os.path.join(temp_dir, "test.c")
+        output_path = os.path.join(temp_dir, "test.prep.c")
+        with open(input_path, "w") as f:
+            f.write(code)
+        return _preprocess(input_path, output_path)
+
+
+def preprocess_file(path: str) -> str:
+    r"""Run preprocessor on given file by invoking GCC with ``-E`` flag.
+
+    :raises PreprocessError: When GCC returns non-zero code.
+
+    :return: The preprocessed code.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        output_path = os.path.join(temp_dir, "test.prep.c")
+        return _preprocess(path, output_path)
 
 
 PARSE_ERROR_REGEX = re.compile(r'.*?:(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)')

@@ -12,7 +12,7 @@ class RepoCloneTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tempdir.cleanup()
 
-    def test_clone(self):
+    def test_clone(self) -> None:
         # Clone an existing repo.
         result = ghcc.clone("huzecong", "memes", clone_folder=self.tempdir.name)
         self.assertTrue(result.success, msg=result.captured_output)
