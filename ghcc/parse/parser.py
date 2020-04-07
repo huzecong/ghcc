@@ -16,6 +16,7 @@ from ..utils.run import run_command
 
 __all__ = [
     "FAKE_LIBC_PATH",
+    "FAKE_LIBC_END_LINE",
     "FunctionExtractor",
     "FunctionReplacer",
     "parse_decompiled_code",
@@ -25,6 +26,7 @@ __all__ = [
 ]
 
 FAKE_LIBC_PATH = str((Path(__file__).parent.parent.parent / "scripts" / "fake_libc_include").absolute())
+FAKE_LIBC_END_LINE = "typedef int __end_of_fake_libc__;"
 
 
 class FunctionExtractor:
@@ -104,7 +106,8 @@ LINE_CONTROL_REGEX = re.compile(r'^#[^\n]*$', flags=re.MULTILINE)
 
 
 def _preprocess(input_path: str, output_path: str) -> str:
-    compile_ret = run_command(["gcc", "-E", "-I" + FAKE_LIBC_PATH, "-o", output_path, input_path], ignore_errors=True)
+    compile_ret = run_command(
+        ["gcc", "-E", "-nostdlib", "-I" + FAKE_LIBC_PATH, "-o", output_path, input_path], ignore_errors=True)
 
     if compile_ret.return_code != 0:
         if compile_ret.captured_output is not None:
@@ -149,7 +152,7 @@ PARSE_ERROR_REGEX = re.compile(r'.*?:(?P<line>\d+):(?P<col>\d+): (?P<msg>.+)')
 
 
 def parse_decompiled_code(code: str, lexer: LexerWrapper, parser: CParser,
-                          max_type_fix_tries: int = 10) -> ASTNode:
+                          max_type_fix_tries: int = 10) -> Tuple[ASTNode, str]:
     r"""Parse preprocessed decompiled code and heuristically fix errors caused by undefined types.
 
     If a parse error is encountered, we attempt to fix the code by parsing the error message and checking whether if
@@ -164,7 +167,7 @@ def parse_decompiled_code(code: str, lexer: LexerWrapper, parser: CParser,
     :param lexer: The lexer to use while parsing.
     :param parser: The parser to use while parsing.
     :param max_type_fix_tries: Maximum retries to fix type errors.
-    :return:
+    :return: A tuple containing the parsed AST and the modified code.
     """
     added_types: Set[str] = set()
     code_lines = code.split("\n")
@@ -210,4 +213,4 @@ def parse_decompiled_code(code: str, lexer: LexerWrapper, parser: CParser,
             code_lines.insert(0, typedef_line)
     else:
         raise ValueError(f"Type fixes exceeded limit ({max_type_fix_tries})")
-    return decompiled_ast
+    return decompiled_ast, code

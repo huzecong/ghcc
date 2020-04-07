@@ -6,11 +6,10 @@ import os
 import pickle
 import re
 import shutil
-import tempfile
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
+from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 import argtyped
 import pycparser
@@ -58,14 +57,15 @@ class MatchedFunction(NamedTuple):
     func_name: str
     original_tokens: List[str]  # tokenized code
     decompiled_tokens: List[str]  # tokenized code
-    original_ast_json: Dict[str, Any]
-    decompiled_ast_json: Optional[Dict[str, Any]]
+    original_ast_json: ghcc.parse.JSONNode
+    decompiled_ast_json: Optional[ghcc.parse.JSONNode]
 
 
 class Result(NamedTuple):
     repo_owner: str
     repo_name: str
     matched_functions: List[MatchedFunction]
+    preprocessed_original_code: Dict[str, str]  # (sha) -> code
     files_found: int
     functions_found: int
     funcs_without_asts: int
@@ -103,6 +103,57 @@ def exception_handler(e: Exception, repo_info: RepoInfo):
                              force_console=True)
 
 
+def find_matching_rbrace(tokens: List[ghcc.parse.Token], start: int) -> int:
+    balance = 0
+    for idx in range(start, len(tokens)):
+        if tokens[idx].name == "{":
+            balance += 1
+        elif tokens[idx].name == "}":
+            balance -= 1
+            if balance == 0:
+                return idx
+    raise ValueError
+
+
+def serialize(func_ast: ASTNode, tokens: List[ghcc.parse.Token]) -> Tuple[ghcc.parse.JSONNode, List[str]]:
+    r"""Generate serialized AST and lexed tokens for a single function.
+
+    :param func_ast:
+    :param tokens:
+    :return:
+    """
+    ast_dict = ghcc.parse.ast_to_dict(func_ast, tokens)
+    # Instead of generating and lexing the code again, we find the function boundaries based on heuristics:
+    # - Left boundary is given by smallest token position in tree.
+    # - Right boundary is the matching right curly brace given the token position of the function body
+    #   compound statement.
+    inf = len(tokens)
+    COORD = ghcc.parse.TOKEN_POS_ATTR
+    find_min_pos_fn = lambda node, xs: min(min(xs, default=inf), node[COORD] or inf)
+    left = ghcc.parse.visit_dict(find_min_pos_fn, ast_dict[ghcc.parse.CHILDREN_ATTR]["decl"])
+    body_start = ghcc.parse.visit_dict(find_min_pos_fn, ast_dict[ghcc.parse.CHILDREN_ATTR]["body"])
+    try:
+        right = find_matching_rbrace(tokens, body_start)
+
+        # Decrease all token positions by offset.
+        def visit_fn(node: ghcc.parse.JSONNode, _) -> None:
+            if node[COORD] is not None:
+                node[COORD] -= left
+
+        ghcc.parse.visit_dict(visit_fn, ast_dict)
+        token_names = [tok.name for tok in tokens[left:(right + 1)]]
+    except ValueError:
+        # Fallback to the fail-safe method.
+        token_names = ghcc.parse.LexerWrapper().lex(CGenerator().visit(func_ast))
+    return ast_dict, token_names
+
+
+JSON_FUNC_NAME_REGEX = re.compile(r'"function":\s*"([^"]+)"')
+DECOMPILED_VAR_REGEX = re.compile(r"@@VAR_\d+@@[^@]+@@([_a-zA-Z0-9]+)")
+DECOMPILED_REG_ALLOC_REGEX = re.compile(r"@<[a-z0-9]+>")
+LINE_CONTROL_REGEX = re.compile(r'^#[^\n]*\n', flags=re.MULTILINE)  # also chomp the newline symbol
+
+
 @ghcc.utils.exception_wrapper(exception_handler)
 def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, decompile_folder: str,
                     use_fake_libc_headers: bool = True, preprocess_timeout: Optional[int] = None) -> Result:
@@ -138,7 +189,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
         if ret.error_type not in [None, ghcc.CloneErrorType.SubmodulesFailed]:
             ghcc.log(f"Failed to clone {repo_full_name}: error type {ret.error_type}", "error")
             # Return a dummy result so this repo is ignored in the future.
-            return Result(repo_info.repo_owner, repo_info.repo_name, [], 0, 0, 0)
+            return Result(repo_info.repo_owner, repo_info.repo_name, [], {}, 0, 0, 0)
 
     # Write makefile info to pickle
     with (repo_binary_dir / "makefiles.pkl").open("wb") as f_pkl:
@@ -156,14 +207,12 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
         user_id=(repo_info.idx % 10000) + 30000,  # user IDs 30000 ~ 39999
         exception_log_fn=functools.partial(exception_handler, repo_info=repo_info))
 
-    parser = CParser()
-    generator = CGenerator()
+    parser = CParser(lexer=ghcc.parse.CachedCLexer)
     lexer = ghcc.parse.LexerWrapper()
-    func_name_regex = re.compile(r'"function":\s*"([^"]+)"')
-    line_control_regex = re.compile(r'^#[^\n]*$', flags=re.MULTILINE)
     decompile_path = Path(decompile_folder)
     extractor = ghcc.parse.FunctionExtractor()
-    matched_functions = []
+    matched_functions: List[MatchedFunction] = []
+    preprocessed_original_code: Dict[str, str] = {}
     files_found = 0
     functions_found = 0
     for makefile in makefiles:
@@ -177,17 +226,20 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             try:
                 with (repo_binary_dir / sha).open("r") as f:
                     code = f.read()
+                code = LINE_CONTROL_REGEX.sub("", code)
             except UnicodeDecodeError:
                 continue  # probably a real binary file
+            preprocessed_original_code[sha] = code
             try:
-                ast: ASTNode = parser.parse(code, filename=os.path.join(repo_full_name, path))
+                original_ast: ASTNode = parser.parse(code, filename=os.path.join(repo_full_name, path))
             except pycparser.c_parser.ParseError as e:
                 ghcc.log(f"{repo_full_name}: Parser error when processing file "
                          f"{str(code_path)} ({sha}): {str(e)}", "error")
                 has_error = True
                 continue  # ignore parsing errors
+            original_tokens = ghcc.parse.convert_to_tokens(code, parser.clex.cached_tokens)
             files_found += 1
-            function_asts = extractor.find_functions(ast)
+            function_asts = extractor.find_functions(original_ast)
             functions_found += len(function_asts)
 
             # Collect decompiled functions with matching original code.
@@ -195,7 +247,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 decompiled_json = [line for line in f if line]  # don't decode, as we only need the function name
             decompiled_funcs: Dict[str, str] = {}
             for line_num, j in enumerate(decompiled_json):
-                match = func_name_regex.search(j)
+                match = JSON_FUNC_NAME_REGEX.search(j)
                 assert match is not None
                 func_name = match.group(1)
                 if func_name not in function_asts:
@@ -203,10 +255,11 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
 
                 decompiled_data = json.loads(j)
                 decompiled_code = decompiled_data["raw_code"]
-                decompiled_code = re.sub(  # replace @@VAR with developer-assigned names
-                    r"@@VAR_\d+@@[^@]+@@([_a-zA-Z0-9]+)", r"\1", decompiled_code)
-                decompiled_code = re.sub(  # remove the register allocation indication in `var@<rdi>`
-                    r"@<[a-z0-9]+>", "", decompiled_code)
+                # Remove irregularities in decompiled code:
+                # - Replace `@@VAR` with developer-assigned names.
+                # - Remove the register allocation indication in `var@<rdi>`.
+                decompiled_code = DECOMPILED_VAR_REGEX.sub(r"\1", decompiled_code)
+                decompiled_code = DECOMPILED_REG_ALLOC_REGEX.sub("", decompiled_code)
                 if func_name.startswith("_"):
                     # For some reason, Hexrays would chomp off one leading underscore from function names in their
                     # generated code, which might lead to corrupt code (`_01inverse` -> `01inverse`). Here we
@@ -219,7 +272,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
 
             # Generate code replacing original functions with decompiled functions.
             replacer = ghcc.parse.FunctionReplacer(decompiled_funcs)
-            replaced_code = replacer.visit(ast)
+            replaced_code = replacer.visit(original_ast)
 
             # Obtain AST for decompiled code by parsing it again.
             code_to_preprocess = DECOMPILED_CODE_HEADER + "\n" + replaced_code
@@ -234,21 +287,9 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 has_error = True
                 continue
 
-            def generate_output(func_ast: ASTNode) -> Tuple[ghcc.parse.JSONNode, List[str]]:
-                func_code = generator.visit(func_ast)
-                # `line_start[lineno - 1]` stores the `lexpos` right before the beginning of line `lineno`.
-                # So `tok.lexpos - line_start[tok.lineno - 1]` gives the column of the token.
-                line_start = [-1] + [i for i, ch in enumerate(func_code) if ch == "\n"]
-                func_tokens = []
-                token_coords = []
-                for tok in lexer.lex_tokens(func_code):
-                    func_tokens.append(tok.value)
-                    token_coords.append(ghcc.parse.TokenCoord(tok.lineno, tok.lexpos - line_start[tok.lineno - 1]))
-                ast_json = ghcc.parse.ast_to_dict(func_ast, token_coords)
-                return ast_json, func_tokens
-
             try:
-                decompiled_ast = ghcc.parse.parse_decompiled_code(code_to_parse, lexer, parser)
+                decompiled_ast, code_to_parse = ghcc.parse.parse_decompiled_code(code_to_parse, lexer, parser)
+                decompiled_tokens = ghcc.parse.convert_to_tokens(code_to_parse, parser.clex.cached_tokens)
             except (ValueError, pycparser.c_parser.ParseError) as e:
                 ghcc.log(f"{repo_full_name}: Could not parse decompiled code for "
                          f"{str(code_path)} ({sha}): {str(e)}", "error")
@@ -266,7 +307,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                     if begin is not None and end is not None and func_name in function_asts:
                         decompiled_func_tokens = lexer.lex("\n".join(code_lines[(begin + 1):end]))
                         original_func_ast = function_asts[func_name]
-                        original_ast_json, original_func_tokens = generate_output(original_func_ast)
+                        original_ast_json, original_func_tokens = serialize(original_func_ast, original_tokens)
                         matched_func = MatchedFunction(
                             file_path=path, binary_hash=sha, func_name=func_name,
                             original_tokens=original_func_tokens, decompiled_tokens=decompiled_func_tokens,
@@ -282,8 +323,8 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                         # Maybe there's other Hexrays-renamed functions that we didn't fix, just ignore them.
                         continue
                     decompiled_func_ast = decompiled_func_asts[func_name]
-                    original_ast_json, original_func_tokens = generate_output(original_func_ast)
-                    decompiled_ast_json, decompiled_func_tokens = generate_output(decompiled_func_ast)
+                    original_ast_json, original_func_tokens = serialize(original_func_ast, original_tokens)
+                    decompiled_ast_json, decompiled_func_tokens = serialize(decompiled_func_ast, decompiled_tokens)
                     matched_func = MatchedFunction(
                         file_path=path, binary_hash=sha, func_name=func_name,
                         original_tokens=original_func_tokens, decompiled_tokens=decompiled_func_tokens,
@@ -307,7 +348,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
              f"functions matched: {len(matched_functions)}/{functions_found} "
              f"({funcs_without_asts} w/o ASTs)", status, force_console=True)
     return Result(repo_owner=repo_info.repo_owner, repo_name=repo_info.repo_name,
-                  matched_functions=matched_functions,
+                  matched_functions=matched_functions, preprocessed_original_code=preprocessed_original_code,
                   files_found=files_found, functions_found=functions_found, funcs_without_asts=funcs_without_asts)
 
 
@@ -422,9 +463,18 @@ def main() -> None:
                 continue
 
             # Write the matched functions to disk.
-            with (output_dir / f"{result.repo_owner}_____{result.repo_name}.jsonl").open("w") as f:
+            result: Result  # type: ignore
+            repo_dir = output_dir / result.repo_owner / result.repo_name
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            with (repo_dir / "matched_funcs.jsonl").open("w") as f:
                 for matched_func in result.matched_functions:
                     f.write(json.dumps(matched_func._asdict(), separators=(',', ':')) + "\n")
+            for sha, code in result.preprocessed_original_code.items():
+                with (repo_dir / f"{sha}.c").open("w") as f:
+                    pos = code.rfind(ghcc.parse.FAKE_LIBC_END_LINE)
+                    if pos != -1:
+                        code = code[(pos + len(ghcc.parse.FAKE_LIBC_END_LINE)):]
+                    f.write(code)
 
             if args.write_db:
                 db.add_repo(result.repo_owner, result.repo_name,

@@ -623,4 +623,6 @@ typedef struct xcb_connection_t xcb_connection_t;
 typedef uint32_t xcb_window_t;
 typedef uint32_t xcb_visualid_t;
 
+typedef int __end_of_fake_libc__;
+
 #endif

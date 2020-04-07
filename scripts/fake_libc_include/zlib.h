@@ -30,4 +30,6 @@ typedef int z_size_t;
 typedef int alloc_func;
 typedef int free_func;
 
+typedef int __end_of_fake_libc__;
+
 #endif

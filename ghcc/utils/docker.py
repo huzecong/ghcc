@@ -68,11 +68,12 @@ def run_docker_command(command: Union[str, List[str]], cwd: Optional[str] = None
     return ret
 
 
-def verify_docker_image(verbose: bool = False) -> bool:
+def verify_docker_image(verbose: bool = False, print_checked_paths: bool = False) -> bool:
     r"""Checks whether the Docker image is up-to-date. This is done by verifying the modification dates for all library
     files are earlier than the Docker image build date.
 
     :param verbose: If ``True``, prints out error message telling the user to rebuild Docker image.
+    :param print_checked_paths: If ``True``, prints out paths of all checked files.
     """
     output = run_command(
         ["docker", "image", "ls", "gcc-custom", "--format", "{{.CreatedAt}}"], return_output=True).captured_output
@@ -82,16 +83,25 @@ def verify_docker_image(verbose: bool = False) -> bool:
 
     repo_root: Path = Path(__file__).parent.parent.parent
     paths_to_check = ["ghcc", "scripts", ".dockerignore", "Dockerfile", "requirements.txt"]
+    paths_to_ignore = ["ghcc/parse", "ghcc/database.py", "scripts/fake_libc_include"]
+    prefixes_to_ignore = [str(repo_root / path) for path in paths_to_ignore]
     max_timestamp = 0.0
     for repo_path in paths_to_check:
-        path = repo_root / repo_path
-        if path.is_file():
+        path = str(repo_root / repo_path)
+        if os.path.isfile(path) and not any(path.startswith(prefix) for prefix in prefixes_to_ignore):
+            if print_checked_paths:
+                print(path)
             max_timestamp = max(max_timestamp, os.path.getmtime(path))
         else:
             for subdir, dirs, files in os.walk(path):
                 if subdir.endswith("__pycache__"):
                     continue
-                max_timestamp = max(max_timestamp, max(os.path.getmtime(os.path.join(subdir, f)) for f in files))
+                for f in files:
+                    file_path = os.path.join(subdir, f)
+                    if not any(file_path.startswith(prefix) for prefix in prefixes_to_ignore):
+                        if print_checked_paths:
+                            print(file_path)
+                        max_timestamp = max(max_timestamp, os.path.getmtime(file_path))
     up_to_date = max_timestamp <= image_creation_timestamp
 
     if not up_to_date and verbose:

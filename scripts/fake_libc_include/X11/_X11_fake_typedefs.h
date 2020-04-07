@@ -35,4 +35,6 @@ typedef struct _XIC *XIC;
 typedef struct _XIM *XIM;
 typedef struct _XImage XImage;
 
+typedef int __end_of_fake_libc__;
+
 #endif
