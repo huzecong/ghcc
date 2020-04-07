@@ -1,3 +1,4 @@
+import functools
 import logging
 import multiprocessing
 import sys
@@ -6,13 +7,16 @@ import time
 import traceback
 
 from termcolor import colored
-from typing import List
+from typing import List, Callable
+
+from .utils.multiproc import get_worker_id
 
 __all__ = [
     "get_logging_levels",
     "set_log_file",
     "log",
     "set_logging_level",
+    "set_console_logging_function",
 ]
 
 
@@ -102,6 +106,7 @@ LOGGING_MAP = {
     "error": logger.error,
     "info": logger.info,
 }
+_CONSOLE_LOG_FN = functools.partial(print, flush=True)
 
 LEVEL_MAP = {
     "success": logging.INFO,
@@ -141,13 +146,12 @@ def log(msg: str, level: str = "info", force_console: bool = False, include_proc
     if level not in LOGGING_MAP:
         raise ValueError(f"Incorrect logging level '{level}'")
     if include_proc_id:
-        proc_name = multiprocessing.current_process().name
-        if "PoolWorker" in proc_name:
-            worker_id = int(proc_name[(proc_name.find('-') + 1):])
+        worker_id = get_worker_id()
+        if worker_id is not None:
             msg = f"(Worker {worker_id:2d}) {msg}"
     if force_console or LEVEL_MAP[level] >= _CONSOLE_LOGGING_LEVEL.get():
         time_str = time.strftime("[%Y-%m-%d %H:%M:%S]")
-        print(colored(time_str, COLOR_MAP[level]), msg, flush=True)
+        _CONSOLE_LOG_FN(colored(time_str, COLOR_MAP[level]) + " " + msg)
     if logger.hasHandlers():
         LOGGING_MAP[level](msg)
 
@@ -165,3 +169,9 @@ def set_logging_level(level: str, console: bool = True, file: bool = True) -> No
         _CONSOLE_LOGGING_LEVEL.set(LEVEL_MAP[level])
     if file:
         logger.setLevel(LEVEL_MAP[level])
+
+
+def set_console_logging_function(log_fn: Callable[[str], None]) -> None:
+    r"""Set the console logging function **for current process only**."""
+    global _CONSOLE_LOG_FN
+    _CONSOLE_LOG_FN = log_fn

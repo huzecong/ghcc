@@ -39,12 +39,19 @@ class ParsingTest(unittest.TestCase):
             assert name_a == name_b
             self._test_ast_equivalent(child_a, child_b)
 
+    def test_pycparser(self) -> None:
+        # Ensure we're using the right version of `pycparser` (and that we've cleaned generated tables from previous
+        # versions) by parsing a string that takes exponential time in versions prior to 2.20.
+        string = r"\xED\xFF\xFF\xEB\x04\xe0\x2d\xe5\x00\x00\x00\x00\xe0\x83\x22\xe5\xf1\x02\x03\x0e\x00\x00\xa0\xe3" \
+                 r"\x02\x30\xc1\xe7\x00\x00\x53\xe3"
+        code = rf'char *s = "{string}";'
+        ast = self.parser.parse(code)
+        assert ast.ext[0].init.value == f'"{string}"'
+
     def test_serialization(self) -> None:
         # Clone the `pycparser` repo.
         result = ghcc.clone("eliben", "pycparser", clone_folder=self.tempdir.name)
         assert result.success
-
-        parser = pycparser.CParser()
 
         def _test(code: str):
             ast = self.parser.parse(code)

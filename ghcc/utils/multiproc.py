@@ -1,19 +1,22 @@
 import contextlib
 import multiprocessing
-import os
+import queue
+import sys
 import threading
 import traceback
 import types
-from typing import Any, Callable, Iterator, List, Optional, TextIO, TypeVar
+from collections import defaultdict
+from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TextIO, TypeVar, Union
 
 import psutil
-
-from ..log import log
+from tqdm import tqdm
 
 __all__ = [
+    "get_worker_id",
     "safe_pool",
     "MultiprocessingFileWriter",
     "kill_proc_tree",
+    "ProgressBarManager",
 ]
 
 T = TypeVar('T')
@@ -41,6 +44,15 @@ class Pool:
 
     def __getattr__(self, item):
         return types.MethodType(Pool._no_op, self)  # no-op for everything else
+
+
+def get_worker_id() -> Optional[int]:
+    r"""Return the ID of the pool worker process, or ``None`` if the current process is not a pool worker."""
+    proc_name = multiprocessing.current_process().name
+    if "PoolWorker" in proc_name:
+        worker_id = int(proc_name[(proc_name.find('-') + 1):])
+        return worker_id
+    return None
 
 
 @contextlib.contextmanager
@@ -76,6 +88,7 @@ def safe_pool(processes: int, *args, closing: Optional[List[Any]] = None, **kwar
     try:
         yield pool
     except KeyboardInterrupt:
+        from ..log import log  # prevent circular import
         log("Gracefully shutting down...", "warning", force_console=True)
         print("Press Ctrl-C again to force terminate...")
         try:
@@ -137,3 +150,100 @@ def kill_proc_tree(pid: int, including_parent: bool = True) -> None:
     if including_parent:
         parent.kill()
         parent.wait(5)
+
+
+class NewEvent(NamedTuple):
+    worker_id: Optional[int]
+    kwargs: Dict[str, Any]
+
+
+class UpdateEvent(NamedTuple):
+    worker_id: Optional[int]
+    n: int
+    postfix: Optional[Dict[str, Any]]
+
+
+class WriteEvent(NamedTuple):
+    worker_id: Optional[int]
+    message: str
+
+
+class QuitEvent(NamedTuple):
+    pass
+
+
+Event = Union[NewEvent, UpdateEvent, WriteEvent, QuitEvent]
+
+
+class ProgressBarManager:
+    r"""A manager for ``tqdm`` progress bars that allows maintaining multiple bars from multiple worker processes."""
+
+    class Proxy:
+        def __init__(self, queue):
+            self.queue = queue
+
+        def new(self, **kwargs) -> None:
+            r"""Construct a new progress bar."""
+            self.queue.put_nowait(NewEvent(get_worker_id(), kwargs))
+
+        def update(self, n: int, postfix: Optional[Dict[str, Any]] = None) -> None:
+            self.queue.put_nowait(UpdateEvent(get_worker_id(), n, postfix))
+
+        def write(self, message: str) -> None:
+            self.queue.put_nowait(WriteEvent(get_worker_id(), message))
+
+    def __init__(self, **kwargs):
+        self.manager = multiprocessing.Manager()
+        self.queue: 'queue.Queue[Event]' = self.manager.Queue(-1)
+        self.progress_bars: Dict[Optional[int], tqdm] = {}
+        self.worker_id_map: Dict[Optional[int], int] = defaultdict(lambda: len(self.worker_id_map))
+        self.bar_kwargs = kwargs.copy()
+        self.thread = threading.Thread(target=self._run)
+        self.thread.daemon = True
+        self.thread.start()
+
+    @property
+    def proxy(self):
+        return self.Proxy(self.queue)
+
+    def _run(self):
+        while True:
+            try:
+                event = self.queue.get()
+                if isinstance(event, NewEvent):
+                    position = self.worker_id_map[event.worker_id]
+                    if event.worker_id in self.progress_bars:
+                        self.progress_bars[event.worker_id].close()
+                        del self.progress_bars[event.worker_id]
+                    kwargs = {**self.bar_kwargs, **event.kwargs, "leave": False, "position": position}
+                    bar = tqdm(**kwargs)
+                    self.progress_bars[event.worker_id] = bar
+                elif isinstance(event, UpdateEvent):
+                    bar = self.progress_bars[event.worker_id]
+                    if event.postfix is not None:
+                        bar.set_postfix(event.postfix, refresh=False)
+                    bar.update(event.n)
+                elif isinstance(event, WriteEvent):
+                    tqdm.write(event.message)
+                elif isinstance(event, QuitEvent):
+                    break
+                else:
+                    assert False
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except EOFError:
+                break
+            except:
+                traceback.print_exc(file=sys.stderr)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def close(self):
+        self.queue.put_nowait(QuitEvent())
+        self.thread.join()
+        for bar in self.progress_bars.values():
+            bar.close()

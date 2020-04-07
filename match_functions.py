@@ -40,6 +40,7 @@ class Arguments(argtyped.Arguments):
     repo_binary_info_cache_path: Optional[str]  # if specified, load/save repo_binaries instead of loading from DB
     verbose: Switch = False
     preprocess_timeout: Optional[int] = 120
+    show_progress: Switch = False  # show a progress bar for each worker process; large overhead
 
 
 class RepoInfo(NamedTuple):
@@ -156,7 +157,8 @@ LINE_CONTROL_REGEX = re.compile(r'^#[^\n]*\n', flags=re.MULTILINE)  # also chomp
 
 @ghcc.utils.exception_wrapper(exception_handler)
 def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, decompile_folder: str,
-                    use_fake_libc_headers: bool = True, preprocess_timeout: Optional[int] = None) -> Result:
+                    use_fake_libc_headers: bool = True, preprocess_timeout: Optional[int] = None,
+                    *, progress_bar: Optional[ghcc.utils.ProgressBarManager.Proxy] = None) -> Result:
     # Directions:
     # 1. Clone or extract from archive.
     # 2. For each Makefile, rerun the compilation process with the flag "-E", so only the preprocessor is run.
@@ -175,7 +177,11 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     repo_binary_dir.mkdir(parents=True, exist_ok=True)
     has_error = False
 
-    ghcc.log(f"Begin processing {repo_full_name} ({total_files} files)")
+    if progress_bar is not None:
+        progress_bar.new(total=total_files, desc=f"Worker {ghcc.utils.get_worker_id():2d}")
+        ghcc.set_console_logging_function(progress_bar.write)
+
+    ghcc.log(f"Begin processing {repo_full_name} ({total_files} files)", force_console=(progress_bar is not None))
 
     if os.path.exists(archive_path):
         # Extract archive
@@ -221,10 +227,13 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             # Load and parse preprocessed original code.
             code_path = mkfile_dir / path
             json_path = decompile_path / (sha + ".jsonl")
-            if not json_path.exists():
+            preprocessed_code_path = repo_binary_dir / sha
+            if progress_bar is not None:
+                progress_bar.update(1, postfix={"file": str(code_path)})
+            if not json_path.exists() or not preprocessed_code_path.exists():
                 continue
             try:
-                with (repo_binary_dir / sha).open("r") as f:
+                with preprocessed_code_path.open("r") as f:
                     code = f.read()
                 code = LINE_CONTROL_REGEX.sub("", code)
             except UnicodeDecodeError:
@@ -443,13 +452,20 @@ def main() -> None:
     db = ghcc.MatchFuncDB()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    with ghcc.utils.safe_pool(args.n_procs, closing=[db]) as pool:
+    if args.show_progress:
+        manager = ghcc.utils.ProgressBarManager(bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]")
+        proxy = manager.proxy
+        ghcc.set_console_logging_function(proxy.write)
+    else:
+        manager = proxy = None
+    with ghcc.utils.safe_pool(args.n_procs, closing=[db, manager]) as pool:
         iterator, stats = iter_repos(
             db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path)
         match_fn: Callable[[RepoInfo], Result] = functools.partial(
             match_functions,
             archive_folder=args.archive_dir, temp_folder=args.temp_dir, decompile_folder=args.decompile_dir,
-            use_fake_libc_headers=args.use_fake_libc_headers, preprocess_timeout=args.preprocess_timeout)
+            use_fake_libc_headers=args.use_fake_libc_headers, preprocess_timeout=args.preprocess_timeout,
+            progress_bar=proxy)
 
         repo_count = stats.repo_count
         func_count = stats.func_count
