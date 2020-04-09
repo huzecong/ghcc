@@ -7,6 +7,7 @@ import pickle
 import re
 import shutil
 import time
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
@@ -178,10 +179,12 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     has_error = False
 
     if progress_bar is not None:
-        progress_bar.new(total=total_files, desc=f"Worker {ghcc.utils.get_worker_id():2d}")
+        worker_id = ghcc.utils.get_worker_id()
+        process_name = f"Worker {worker_id}" if worker_id is not None else "Main Process"
+        progress_bar.new(total=total_files, desc=process_name + f" [{repo_full_name}]")
         ghcc.set_console_logging_function(progress_bar.write)
 
-    ghcc.log(f"Begin processing {repo_full_name} ({total_files} files)", force_console=(progress_bar is not None))
+    ghcc.log(f"Begin processing {repo_full_name} ({total_files} files)")
 
     if os.path.exists(archive_path):
         # Extract archive
@@ -225,11 +228,11 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
         mkfile_dir = Path(makefile['directory'])
         for path, sha in zip(makefile["binaries"], makefile["sha256"]):
             # Load and parse preprocessed original code.
-            code_path = mkfile_dir / path
+            code_path = str(mkfile_dir / path)
             json_path = decompile_path / (sha + ".jsonl")
             preprocessed_code_path = repo_binary_dir / sha
             if progress_bar is not None:
-                progress_bar.update(1, postfix={"file": str(code_path)})
+                progress_bar.update(1, postfix={"file": code_path})
             if not json_path.exists() or not preprocessed_code_path.exists():
                 continue
             try:
@@ -243,7 +246,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 original_ast: ASTNode = parser.parse(code, filename=os.path.join(repo_full_name, path))
             except pycparser.c_parser.ParseError as e:
                 ghcc.log(f"{repo_full_name}: Parser error when processing file "
-                         f"{str(code_path)} ({sha}): {str(e)}", "error")
+                         f"{code_path} ({sha}): {str(e)}", "error")
                 has_error = True
                 continue  # ignore parsing errors
             original_tokens = ghcc.parse.convert_to_tokens(code, parser.clex.cached_tokens)
@@ -289,7 +292,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 code_to_parse = ghcc.parse.preprocess(code_to_preprocess)
             except ghcc.parse.PreprocessError as e:
                 msg = (f"{repo_full_name}: GCC return value nonzero for decompiled code of "
-                       f"{str(code_path)} ({sha})")
+                       f"{code_path} ({sha})")
                 if len(e.args) > 0:
                     msg += ":\n" + str(e)
                 ghcc.log(msg, "error")
@@ -301,7 +304,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 decompiled_tokens = ghcc.parse.convert_to_tokens(code_to_parse, parser.clex.cached_tokens)
             except (ValueError, pycparser.c_parser.ParseError) as e:
                 ghcc.log(f"{repo_full_name}: Could not parse decompiled code for "
-                         f"{str(code_path)} ({sha}): {str(e)}", "error")
+                         f"{code_path} ({sha}): {str(e)}", "error")
                 has_error = True
 
                 # We don't have ASTs for decompiled functions, but we can still dump the code.
@@ -318,7 +321,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                         original_func_ast = function_asts[func_name]
                         original_ast_json, original_func_tokens = serialize(original_func_ast, original_tokens)
                         matched_func = MatchedFunction(
-                            file_path=path, binary_hash=sha, func_name=func_name,
+                            file_path=code_path, binary_hash=sha, func_name=func_name,
                             original_tokens=original_func_tokens, decompiled_tokens=decompiled_func_tokens,
                             original_ast_json=original_ast_json, decompiled_ast_json=None)
                         matched_functions.append(matched_func)
@@ -335,7 +338,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                     original_ast_json, original_func_tokens = serialize(original_func_ast, original_tokens)
                     decompiled_ast_json, decompiled_func_tokens = serialize(decompiled_func_ast, decompiled_tokens)
                     matched_func = MatchedFunction(
-                        file_path=path, binary_hash=sha, func_name=func_name,
+                        file_path=code_path, binary_hash=sha, func_name=func_name,
                         original_tokens=original_func_tokens, decompiled_tokens=decompiled_func_tokens,
                         original_ast_json=original_ast_json, decompiled_ast_json=decompiled_ast_json)
                     matched_functions.append(matched_func)
@@ -344,10 +347,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     status = ("success" if not has_error and len(matched_functions) > 0 else
               ("warning" if not has_error or len(matched_functions) > 0 else
                "error"))
-    if status == "success":
-        shutil.rmtree(repo_src_path)
-    else:
-        shutil.rmtree(repo_dir)
+    shutil.rmtree(repo_dir)
 
     end_time = time.time()
     funcs_without_asts = sum(matched_func.decompiled_ast_json is None for matched_func in matched_functions)
@@ -433,6 +433,7 @@ def main() -> None:
     if not ghcc.utils.verify_docker_image(verbose=True):
         exit(1)
 
+    sys.setrecursionlimit(10000)
     args = Arguments()
     if args.pdb:
         ghcc.utils.register_ipython_excepthook()
