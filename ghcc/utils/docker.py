@@ -4,8 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
-from .run import CommandResult, error_wrapper, run_command
-from ..log import log
+from flutes.log import log
+from flutes.run import CommandResult, error_wrapper, run_command
 
 __all__ = [
     "run_docker_command",

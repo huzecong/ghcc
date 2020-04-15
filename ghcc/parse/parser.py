@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
 
 import pycparser
+from flutes.fs import remove_prefix
+from flutes.run import run_command
 from pycparser import c_ast
 from pycparser.c_ast import Node as ASTNode
 from pycparser.c_generator import CGenerator
 from pycparser.c_parser import CParser
 
 from .lexer import LexerWrapper
-from ..utils.fs import remove_prefix
-from ..utils.run import run_command
 
 __all__ = [
     "FAKE_LIBC_PATH",

@@ -4,6 +4,8 @@ import tempfile
 import unittest
 from typing import List
 
+import flutes
+
 import ghcc
 
 
@@ -45,7 +47,7 @@ class CompileTest(unittest.TestCase):
         # Check if binaries contain debugging information (whether mock GCC works).
         for elf in elf_paths:
             # NOTE: This doesn't work under macOS.
-            ret = ghcc.utils.run_command(f"objdump --syms {elf} | grep debug | wc -l", return_output=True, shell=True)
+            ret = flutes.run_command(f"objdump --syms {elf} | grep debug | wc -l", return_output=True, shell=True)
             assert int(ret.captured_output.decode('utf-8')) > 0
 
     def _test_compile(self, compile_func) -> None:
@@ -89,7 +91,7 @@ class CompileTest(unittest.TestCase):
         }
         libraries = ["pthread", "m", "opencv", "openmp", "library_with_random_name"]
         try:
-            ghcc.utils.run_command(
+            flutes.run_command(
                 ["gcc", *[f"-l{lib}" for lib in libraries], "nonexistent_file.c"], env=env)
         except subprocess.CalledProcessError:
             pass  # error must occur because file is nonexistent

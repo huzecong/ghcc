@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
+import flutes
 import numpy as np
 from IPython import embed
 from tqdm import tqdm
@@ -58,7 +59,7 @@ def analyze_logs(path: str) -> Dict[str, InfoDict]:
 
 
 def main():
-    ghcc.utils.register_ipython_excepthook()
+    flutes.register_ipython_excepthook()
     random.seed(ghcc.__MAGIC__)
     np.random.seed(ghcc.__MAGIC__)
 

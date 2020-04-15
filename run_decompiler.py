@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Iterator, NamedTuple, Optional, Tuple, Callable
 
 import argtyped
+import flutes
 import tqdm
 from mypy_extensions import TypedDict
 
@@ -81,16 +82,16 @@ def run_decompiler(file_name: str, script: str, env: Optional[EnvDict] = None,
     """
     idacall = [args.ida, '-B', f'-S{script}', file_name]
     try:
-        ghcc.utils.run_command(idacall, env=env, timeout=timeout)
+        flutes.run_command(idacall, env=env, timeout=timeout)
     except subprocess.CalledProcessError as e:
         if b"Traceback (most recent call last):" in e.output:
             # Exception raised by Python script called by IDA, throw it up.
             raise e
-        ghcc.utils.run_command(['rm', '-f', f'{file_name}.i64'])
+        flutes.run_command(['rm', '-f', f'{file_name}.i64'])
         if b"Corrupted pseudo-registry file" in e.output:
             write_pseudo_registry()
             # Run again without try-catch; if it fails, it should crash.
-            ghcc.utils.run_command(idacall, env=env, timeout=timeout)
+            flutes.run_command(idacall, env=env, timeout=timeout)
 
 
 class BinaryInfo(TypedDict):
@@ -116,10 +117,10 @@ class DecompilationResult(NamedTuple):
 
 def exception_handler(e, binary_info: BinaryInfo):
     binary_path = binary_info["path"]
-    ghcc.utils.log_exception(e, f"Exception occurred when processing {binary_path}")
+    flutes.log_exception(e, f"Exception occurred when processing {binary_path}")
 
 
-@ghcc.utils.exception_wrapper(exception_handler)
+@flutes.exception_wrapper(exception_handler)
 def decompile(binary_info: BinaryInfo, output_dir: str, binary_dir: str,
               timeout: Optional[int] = None) -> DecompilationResult:
     binary_path = binary_info["path"]
@@ -149,31 +150,31 @@ def decompile(binary_info: BinaryInfo, output_dir: str, binary_dir: str,
             # First collect variables.
             env['COLLECTED_VARS'] = collected_vars.name
             with tempfile.NamedTemporaryFile(dir=tempdir) as orig:
-                ghcc.utils.run_command(['cp', file_path, orig.name])
+                flutes.run_command(['cp', file_path, orig.name])
                 # Timeout after 30 seconds for first run.
                 try:
                     run_decompiler(orig.name, COLLECT, env=env, timeout=timeout)
                 except subprocess.TimeoutExpired:
-                    ghcc.log(f"[TIMED OUT] {original_path} ({binary_path})", "warning")
+                    flutes.log(f"[TIMED OUT] {original_path} ({binary_path})", "warning")
                     return create_result(DecompilationStatus.TimedOut)
                 try:
                     assert pickle.load(collected_vars)  # non-empty
                 except:
-                    ghcc.log(f"[NO VARS] {original_path} ({binary_path})", "warning")
+                    flutes.log(f"[NO VARS] {original_path} ({binary_path})", "warning")
                     return create_result(DecompilationStatus.NoVariables)
             # Make a new stripped copy and pass it the collected vars.
             with tempfile.NamedTemporaryFile(dir=tempdir) as stripped:
-                ghcc.utils.run_command(['cp', file_path, stripped.name])
-                ghcc.utils.run_command(['strip', '--strip-debug', stripped.name])
+                flutes.run_command(['cp', file_path, stripped.name])
+                flutes.run_command(['strip', '--strip-debug', stripped.name])
                 # Dump the trees.
                 # No timeout here, we know it'll run in a reasonable amount of
                 # time and don't want mismatched files.
                 run_decompiler(stripped.name, DUMP_TREES, env=env)
         jsonl_path = os.path.join(tempdir, f"{binary_hash}.jsonl")
-        ghcc.utils.run_command(['cp', jsonl_path, output_path])
+        flutes.run_command(['cp', jsonl_path, output_path])
     end = datetime.datetime.now()
     duration = end - start
-    ghcc.log(f"[OK {duration.total_seconds():5.2f}s] {original_path} ({binary_path})", "success")
+    flutes.log(f"[OK {duration.total_seconds():5.2f}s] {original_path} ({binary_path})", "success")
     return create_result(DecompilationStatus.Success, duration)
 
 
@@ -194,16 +195,16 @@ def iter_binaries(db: ghcc.BinaryDB, binaries: Dict[str, BinaryInfo]) -> Iterato
                 migrated_count += 1
             continue
         if migrated_count > 0:
-            ghcc.log(f"Migrated {migrated_count} binary entries", force_console=True)
+            flutes.log(f"Migrated {migrated_count} binary entries", force_console=True)
             migrated_count = 0
         if skipped_count > 0:
-            ghcc.log(f"Skipped {skipped_count} binaries that have been processed", force_console=True)
+            flutes.log(f"Skipped {skipped_count} binaries that have been processed", force_console=True)
             skipped_count = 0
         yield info
 
 
 def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, BinaryInfo]:
-    @ghcc.utils.cache(cache_path, name="binary mapping cache")
+    @flutes.cache(cache_path, name="binary mapping cache")
     def _compute_binary_mapping() -> Dict[str, BinaryInfo]:
         binaries: Dict[str, BinaryInfo] = {}  # sha -> binary_info
         with contextlib.closing(ghcc.RepoDB()) as repo_db:
@@ -212,7 +213,7 @@ def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, BinaryInfo
                 prefix = f"{repo['repo_owner']}/{repo['repo_name']}"
                 for makefile in repo['makefiles']:
                     # Absolute Docker paths were used when compiling; remove them.
-                    directory = f"{prefix}/" + ghcc.utils.remove_prefix(makefile['directory'], "/usr/src/repo/")
+                    directory = f"{prefix}/" + flutes.remove_prefix(makefile['directory'], "/usr/src/repo/")
                     for path, sha in zip(makefile['binaries'], makefile['sha256']):
                         binaries[sha] = BinaryInfo({
                             "repo_owner": repo['repo_owner'],
@@ -228,8 +229,8 @@ def get_binary_mapping(cache_path: Optional[str] = None) -> Dict[str, BinaryInfo
 def main() -> None:
     if args.n_procs == 0:
         # Only do this on the single-threaded case.
-        ghcc.utils.register_ipython_excepthook()
-    ghcc.log(f"Running with {args.n_procs} worker processes", "warning")
+        flutes.register_ipython_excepthook()
+    flutes.log(f"Running with {args.n_procs} worker processes", "warning")
 
     # Check for/create output directories
     make_directory(args.output_dir)
@@ -238,17 +239,17 @@ def main() -> None:
     if os.path.exists('/dev/shm'):
         tempfile.tempdir = '/dev/shm'
 
-    ghcc.set_log_file(args.log_file)
+    flutes.set_log_file(args.log_file)
     write_pseudo_registry()
 
     # Obtain a list of all binaries
     binaries = get_binary_mapping(args.binary_mapping_cache_file)
 
-    ghcc.log(f"{len(binaries)} binaries to process.")
+    flutes.log(f"{len(binaries)} binaries to process.")
     file_count = 0
     db = ghcc.BinaryDB()
 
-    with ghcc.utils.safe_pool(args.n_procs, closing=[db]) as pool:
+    with flutes.safe_pool(args.n_procs, closing=[db]) as pool:
         decompile_fn: Callable[[BinaryInfo], DecompilationResult] = functools.partial(
             decompile, output_dir=args.output_dir, binary_dir=args.binaries_dir, timeout=args.timeout)
         for result in pool.imap_unordered(decompile_fn, iter_binaries(db, binaries)):
@@ -257,7 +258,7 @@ def main() -> None:
                 db.add_binary(result.info["repo_owner"], result.info["repo_name"],
                               result.hash, result.status is DecompilationStatus.Success)
             if file_count % 100 == 0:
-                ghcc.log(f"Processed {file_count} binaries", force_console=True)
+                flutes.log(f"Processed {file_count} binaries", force_console=True)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,5 @@
 argtyped
+flutes
 mypy_extensions
 psutil
 pycparser >= 2.20

@@ -1,4 +1,4 @@
-from typing import Iterator, List, NamedTuple, Tuple
+from typing import Iterator, List, NamedTuple
 
 from pycparser.c_lexer import CLexer
 

@@ -7,6 +7,7 @@ import time
 from typing import Dict, List, Optional
 
 import argtyped
+import flutes
 from argtyped import Switch
 
 import ghcc
@@ -95,11 +96,11 @@ def main():
             read_queue(makefiles, q)
         read_queue(makefiles, q)
 
-    ghcc.utils.kill_proc_tree(os.getpid(), including_parent=False)  # make sure all subprocesses are dead
+    flutes.kill_proc_tree(os.getpid(), including_parent=False)  # make sure all subprocesses are dead
     with open(os.path.join(BINARY_PATH, "log.pkl"), "wb") as f:
         pickle.dump(makefiles, f)
-    ghcc.utils.run_command(["chmod", "-R", "g+w", BINARY_PATH])
-    ghcc.utils.run_command(["chmod", "-R", "g+w", REPO_PATH])
+    flutes.run_command(["chmod", "-R", "g+w", BINARY_PATH])
+    flutes.run_command(["chmod", "-R", "g+w", REPO_PATH])
 
 
 if __name__ == '__main__':

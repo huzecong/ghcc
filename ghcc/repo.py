@@ -5,7 +5,7 @@ import time
 from enum import Enum, auto
 from typing import NamedTuple, Optional
 
-from .utils.run import run_command
+from flutes.run import run_command
 
 __all__ = [
     "CloneErrorType",

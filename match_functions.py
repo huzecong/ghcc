@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable, Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 
 import argtyped
+import flutes
 import pycparser
 import tqdm
 from argtyped import Switch
@@ -101,8 +102,8 @@ typedef int (*__compar_fn_t)(const void *, const void *);
 
 
 def exception_handler(e: Exception, repo_info: RepoInfo):
-    ghcc.utils.log_exception(e, f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}",
-                             force_console=True)
+    flutes.log_exception(e, f"Exception occurred when processing {repo_info.repo_owner}/{repo_info.repo_name}",
+                         force_console=True)
 
 
 def find_matching_rbrace(tokens: List[ghcc.parse.Token], start: int) -> int:
@@ -156,10 +157,10 @@ DECOMPILED_REG_ALLOC_REGEX = re.compile(r"@<[a-z0-9]+>")
 LINE_CONTROL_REGEX = re.compile(r'^#[^\n]*\n', flags=re.MULTILINE)  # also chomp the newline symbol
 
 
-@ghcc.utils.exception_wrapper(exception_handler)
+@flutes.exception_wrapper(exception_handler)
 def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, decompile_folder: str,
                     use_fake_libc_headers: bool = True, preprocess_timeout: Optional[int] = None,
-                    *, progress_bar: Optional[ghcc.utils.ProgressBarManager.Proxy] = None) -> Result:
+                    *, progress_bar: Optional[flutes.ProgressBarManager.Proxy] = None) -> Result:
     # Directions:
     # 1. Clone or extract from archive.
     # 2. For each Makefile, rerun the compilation process with the flag "-E", so only the preprocessor is run.
@@ -179,16 +180,16 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
     has_error = False
 
     if progress_bar is not None:
-        worker_id = ghcc.utils.get_worker_id()
+        worker_id = flutes.get_worker_id()
         process_name = f"Worker {worker_id}" if worker_id is not None else "Main Process"
         progress_bar.new(total=total_files, desc=process_name + f" [{repo_full_name}]")
-        ghcc.set_console_logging_function(progress_bar.write)
+        flutes.set_console_logging_function(progress_bar.write)
 
-    ghcc.log(f"Begin processing {repo_full_name} ({total_files} files)")
+    flutes.log(f"Begin processing {repo_full_name} ({total_files} files)")
 
     if os.path.exists(archive_path):
         # Extract archive
-        ghcc.utils.run_command(["tar", f"xzf", str(archive_path)], cwd=str(repo_dir))
+        flutes.run_command(["tar", f"xzf", str(archive_path)], cwd=str(repo_dir))
         (repo_dir / repo_folder_name).rename(repo_src_path)
     else:
         # Clone repo
@@ -196,7 +197,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             shutil.rmtree(repo_src_path)
         ret = ghcc.clone(repo_info.repo_owner, repo_info.repo_name, clone_folder=str(repo_dir), folder_name="src")
         if ret.error_type not in [None, ghcc.CloneErrorType.SubmodulesFailed]:
-            ghcc.log(f"Failed to clone {repo_full_name}: error type {ret.error_type}", "error")
+            flutes.log(f"Failed to clone {repo_full_name}: error type {ret.error_type}", "error")
             # Return a dummy result so this repo is ignored in the future.
             return Result(repo_info.repo_owner, repo_info.repo_name, [], {}, 0, 0, 0)
 
@@ -245,8 +246,8 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             try:
                 original_ast: ASTNode = parser.parse(code, filename=os.path.join(repo_full_name, path))
             except pycparser.c_parser.ParseError as e:
-                ghcc.log(f"{repo_full_name}: Parser error when processing file "
-                         f"{code_path} ({sha}): {str(e)}", "error")
+                flutes.log(f"{repo_full_name}: Parser error when processing file "
+                           f"{code_path} ({sha}): {str(e)}", "error")
                 has_error = True
                 continue  # ignore parsing errors
             original_tokens = ghcc.parse.convert_to_tokens(code, parser.clex.cached_tokens)
@@ -295,7 +296,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                        f"{code_path} ({sha})")
                 if len(e.args) > 0:
                     msg += ":\n" + str(e)
-                ghcc.log(msg, "error")
+                flutes.log(msg, "error")
                 has_error = True
                 continue
 
@@ -303,8 +304,8 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 decompiled_ast, code_to_parse = ghcc.parse.parse_decompiled_code(code_to_parse, lexer, parser)
                 decompiled_tokens = ghcc.parse.convert_to_tokens(code_to_parse, parser.clex.cached_tokens)
             except (ValueError, pycparser.c_parser.ParseError) as e:
-                ghcc.log(f"{repo_full_name}: Could not parse decompiled code for "
-                         f"{code_path} ({sha}): {str(e)}", "error")
+                flutes.log(f"{repo_full_name}: Could not parse decompiled code for "
+                           f"{code_path} ({sha}): {str(e)}", "error")
                 has_error = True
 
                 # We don't have ASTs for decompiled functions, but we can still dump the code.
@@ -351,11 +352,11 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
 
     end_time = time.time()
     funcs_without_asts = sum(matched_func.decompiled_ast_json is None for matched_func in matched_functions)
-    ghcc.log(f"[{end_time - start_time:6.2f}s] "
-             f"{repo_full_name}: "
-             f"Files found: {files_found}/{total_files}, "
-             f"functions matched: {len(matched_functions)}/{functions_found} "
-             f"({funcs_without_asts} w/o ASTs)", status, force_console=True)
+    flutes.log(f"[{end_time - start_time:6.2f}s] "
+               f"{repo_full_name}: "
+               f"Files found: {files_found}/{total_files}, "
+               f"functions matched: {len(matched_functions)}/{functions_found} "
+               f"({funcs_without_asts} w/o ASTs)", status, force_console=True)
     return Result(repo_owner=repo_info.repo_owner, repo_name=repo_info.repo_name,
                   matched_functions=matched_functions, preprocessed_original_code=preprocessed_original_code,
                   files_found=files_found, functions_found=functions_found, funcs_without_asts=funcs_without_asts)
@@ -364,7 +365,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
 def _iter_repos(db_entries: Set[Tuple[str, str]], max_count: Optional[int] = None, skip_to: Optional[str] = None,
                 cache_path: Optional[str] = None) -> Iterator[RepoInfo]:
     with contextlib.closing(ghcc.RepoDB()) as repo_db, contextlib.closing(ghcc.BinaryDB()) as binary_db:
-        @ghcc.utils.cache(cache_path, name="repo binary info")
+        @flutes.cache(cache_path, name="repo binary info")
         def _get_repo_binaries_info() -> Dict[Tuple[str, str], Set[str]]:
             repo_binaries: Dict[Tuple[str, str], Set[str]] = defaultdict(set)
             all_bins = binary_db.collection.find()
@@ -377,7 +378,7 @@ def _iter_repos(db_entries: Set[Tuple[str, str]], max_count: Optional[int] = Non
         repo_entries: Iterator[ghcc.RepoDB.Entry] = repo_db.safe_iter(static=True)
         if skip_to is not None:
             skip_to_repo = tuple(skip_to.split("/"))
-            repo_entries = ghcc.utils.drop_until(
+            repo_entries = flutes.drop_until(
                 lambda entry: (entry["repo_owner"], entry["repo_name"]) == skip_to_repo, repo_entries)
         index = 0
         for entry in repo_entries:
@@ -436,17 +437,17 @@ def main() -> None:
     sys.setrecursionlimit(10000)
     args = Arguments()
     if args.pdb:
-        ghcc.utils.register_ipython_excepthook()
+        flutes.register_ipython_excepthook()
         if args.n_procs == 0:
             globals()['match_functions'] = match_functions.__wrapped__
 
     if not args.verbose:
-        ghcc.set_logging_level("quiet", console=True, file=False)
-    ghcc.set_log_file(args.log_file)
-    ghcc.log("Running with arguments:\n" + args.to_string(), force_console=True)
+        flutes.set_logging_level("quiet", console=True, file=False)
+    flutes.set_log_file(args.log_file)
+    flutes.log("Running with arguments:\n" + args.to_string(), force_console=True)
 
     if os.path.exists(args.temp_dir):
-        ghcc.log(f"Removing contents of temporary folder '{args.temp_dir}'...", "warning", force_console=True)
+        flutes.log(f"Removing contents of temporary folder '{args.temp_dir}'...", "warning", force_console=True)
         ghcc.utils.run_docker_command(["rm", "-rf", "/usr/src/*"], user=0,
                                       directory_mapping={args.temp_dir: "/usr/src"})
 
@@ -454,12 +455,11 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if args.show_progress:
-        manager = ghcc.utils.ProgressBarManager(bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]")
+        manager = flutes.ProgressBarManager(bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]")
         proxy = manager.proxy
-        ghcc.set_console_logging_function(proxy.write)
     else:
         manager = proxy = None
-    with ghcc.utils.safe_pool(args.n_procs, closing=[db, manager]) as pool:
+    with flutes.safe_pool(args.n_procs, closing=[db, manager]) as pool:
         iterator, stats = iter_repos(
             db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path)
         match_fn: Callable[[RepoInfo], Result] = functools.partial(
@@ -475,7 +475,7 @@ def main() -> None:
             if result is None:
                 # Exception occurred.
                 if args.exit_on_exception:
-                    ghcc.log(f"Exception occurred, exiting because 'exit_on_exception' is True", "warning")
+                    flutes.log(f"Exception occurred, exiting because 'exit_on_exception' is True", "warning")
                     break
                 continue
 
@@ -503,8 +503,8 @@ def main() -> None:
             func_count += len(result.matched_functions)
             func_without_ast_count += result.funcs_without_asts
             if repo_count % 100 == 0:
-                ghcc.log(f"Processed {repo_count} repositories, {func_count} functions matched "
-                         f"({func_without_ast_count} w/o AST)", force_console=True)
+                flutes.log(f"Processed {repo_count} repositories, {func_count} functions matched "
+                           f"({func_without_ast_count} w/o AST)", force_console=True)
 
 
 if __name__ == '__main__':

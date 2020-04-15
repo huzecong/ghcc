@@ -5,7 +5,7 @@ import re
 import subprocess
 import tempfile
 
-import ghcc
+import flutes
 
 parser = argparse.ArgumentParser()
 parser.add_argument("file", type=str)  # path to libraries log file
@@ -49,13 +49,13 @@ int main() {
 
     def check_installed(_library: str) -> bool:
         try:
-            _ret = ghcc.utils.run_command(["gcc", src_path, f"-l{_library}"], cwd=tempdir.name)
+            _ret = flutes.run_command(["gcc", src_path, f"-l{_library}"], cwd=tempdir.name)
             return _ret.return_code == 0
         except subprocess.CalledProcessError:
             return False
 
     packages_to_install = []
-    ghcc.utils.run_command(["apt-get", "update"])  # refresh package index just in case
+    flutes.run_command(["apt-get", "update"])  # refresh package index just in case
 
     if args.skip_to is not None:
         libraries = skip_until(args.skip_to, libraries)
@@ -64,7 +64,7 @@ int main() {
     for lib in libraries:
         # Check if library is installed -- whether linking succeeds.
         if check_installed(lib):
-            ghcc.log(f"'{lib}' is installed", "info")
+            flutes.log(f"'{lib}' is installed", "info")
             continue
 
         # Find the correct package for the name:
@@ -79,7 +79,7 @@ int main() {
                  f"{libname}(-?[0-9.]+)?-dev",
                  libname]
         for name in names:
-            ret = ghcc.utils.run_command(["apt-cache", "--quiet", "search", name], timeout=10, return_output=True)
+            ret = flutes.run_command(["apt-cache", "--quiet", "search", name], timeout=10, return_output=True)
             packages = [line.split()[0] for line in ret.captured_output.decode('utf-8').split('\n') if line]
             if len(packages) > 0:
                 # Find the most matching package name. This is done in a simple way: search the package name using the
@@ -95,7 +95,7 @@ int main() {
                     continue
                 package = min(packages_rank)[1]
                 print(f"Trying {package} for {lib}", flush=True)
-                ret = ghcc.utils.run_command(["apt-get", "install", "--dry-run", package], return_output=True)
+                ret = flutes.run_command(["apt-get", "install", "--dry-run", package], return_output=True)
                 match = re.search(r"(\d+) newly installed", ret.captured_output.decode('utf-8'))
                 if match.group(1):
                     install_count = int(match.group(1))
@@ -104,21 +104,21 @@ int main() {
                         continue
                 try:
                     # Do not use a timeout, otherwise DPKG will break.
-                    ret = ghcc.utils.run_command(["apt-get", "install", "-y", "--no-install-recommends", package])
+                    ret = flutes.run_command(["apt-get", "install", "-y", "--no-install-recommends", package])
                 except subprocess.CalledProcessError as e:
-                    ghcc.log(f"Exception occurred when installing '{package}' for '{lib}': {e}", "error")
+                    flutes.log(f"Exception occurred when installing '{package}' for '{lib}': {e}", "error")
                     continue
                 if ret.return_code != 0 or not check_installed(lib):
                     # Although it's not the package we want, do not try to uninstall as it may result in other errors.
                     continue
 
                 packages_to_install.append(package)
-                ghcc.log(f"'{lib}' resolved to '{package}'", "success")
+                flutes.log(f"'{lib}' resolved to '{package}'", "success")
                 break
         else:
-            ghcc.log(f"Failed to resolve '{lib}'", "error")
+            flutes.log(f"Failed to resolve '{lib}'", "error")
 
-    ghcc.log(f"Packages to install are:\n" + '\n'.join(packages_to_install), "info")
+    flutes.log(f"Packages to install are:\n" + '\n'.join(packages_to_install), "info")
 
 
 if __name__ == '__main__':

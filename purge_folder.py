@@ -3,6 +3,8 @@ import argparse
 import os
 import subprocess
 
+import flutes
+
 import ghcc
 
 parser = argparse.ArgumentParser()
@@ -21,8 +23,8 @@ try:
         ghcc.utils.run_docker_command(["rm", "-rf", f"/usr/src/{folder}"],
                                       user=0, directory_mapping={parent: "/usr/src"})
 except subprocess.CalledProcessError as e:
-    ghcc.log(f"Command failed with retcode {e.returncode}", "error")
+    flutes.log(f"Command failed with retcode {e.returncode}", "error")
     output = e.output.decode("utf-8")
     if len(output) > 200:
         output = output[:200] + "... (omitted)"
-    ghcc.log("Captured output: " + output)
+    flutes.log("Captured output: " + output)
