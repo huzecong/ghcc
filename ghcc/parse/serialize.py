@@ -15,6 +15,7 @@ from .lexer import Token
 __all__ = [
     "ast_to_dict",
     "dict_to_ast",
+    "get_ast_class",
     "visit_dict",
     "JSONNode",
     "NODE_TYPE_ATTR",
@@ -150,11 +151,16 @@ def visit_dict(visit_fn: Callable[[JSONNode, List[T]], T], node_dict: JSONNode) 
     return visit_fn(node_dict, children_result)
 
 
+def get_ast_class(name: str) -> Type[ASTNode]:
+    return AVAILABLE_NODES[name]
+
+
+
 def dict_to_ast(node_dict: JSONNode) -> ASTNode:
     r"""Recursively build an AST from dictionary representation. Coordinate information is discarded.
     """
     class_name = node_dict[NODE_TYPE_ATTR]
-    klass = AVAILABLE_NODES[class_name]
+    klass = get_ast_class(class_name)
 
     # Create a new dict containing the key-value pairs which we can pass to node constructors.
     kwargs: Dict[str, Any] = {'coord': None}

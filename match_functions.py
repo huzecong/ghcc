@@ -454,11 +454,10 @@ def main() -> None:
     db = ghcc.MatchFuncDB()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    manager = proxy = None
     if args.show_progress:
         manager = flutes.ProgressBarManager(bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]")
         proxy = manager.proxy
-    else:
-        manager = proxy = None
     with flutes.safe_pool(args.n_procs, closing=[db, manager]) as pool:
         iterator, stats = iter_repos(
             db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path)
