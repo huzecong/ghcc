@@ -54,7 +54,7 @@ class Database(abc.ABC):
         """
         return []
 
-    def __init__(self, config_file: str = "./database-config.json"):
+    def __init__(self, config_file: str = "./database-config.json", **override_config):
         r"""Create a connection to the database.
         """
         if not os.path.exists(config_file):
@@ -62,6 +62,7 @@ class Database(abc.ABC):
                              f"Please refer to 'database-config-example.json' for the format")
         with open(config_file) as f:
             config: Database.Config = json.load(f)
+        config.update(override_config)
         missing_keys = [key for key in Database.Config.__annotations__ if key not in config]
         if len(missing_keys) > 0:
             raise ValueError(f"Keys {missing_keys} are missing from the DB config file at '{config_file}'.from "

@@ -155,7 +155,6 @@ def get_ast_class(name: str) -> Type[ASTNode]:
     return AVAILABLE_NODES[name]
 
 
-
 def dict_to_ast(node_dict: JSONNode) -> ASTNode:
     r"""Recursively build an AST from dictionary representation. Coordinate information is discarded.
     """

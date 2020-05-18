@@ -4,8 +4,10 @@ import functools
 import json
 import os
 import pickle
+import random
 import re
 import shutil
+import string
 import time
 import sys
 from collections import defaultdict
@@ -43,6 +45,7 @@ class Arguments(argtyped.Arguments):
     verbose: Switch = False
     preprocess_timeout: Optional[int] = 120
     show_progress: Switch = False  # show a progress bar for each worker process; large overhead
+    force_reprocess: Switch = False  # also process repos that are recorded as processed in DB
 
 
 class RepoInfo(NamedTuple):
@@ -58,6 +61,7 @@ class MatchedFunction(NamedTuple):
     binary_hash: str
     # Code
     func_name: str
+    variable_names: Dict[str, Tuple[str, str]]  # (var_id) -> (decompiled_var_name, original_var_name)
     original_tokens: List[str]  # tokenized code
     decompiled_tokens: List[str]  # tokenized code
     original_ast_json: ghcc.parse.JSONNode
@@ -151,10 +155,18 @@ def serialize(func_ast: ASTNode, tokens: List[ghcc.parse.Token]) -> Tuple[ghcc.p
     return ast_dict, token_names
 
 
+# Match function names in raw JSON read from decompilation output.
+# - Capture groups: (func_name)
 JSON_FUNC_NAME_REGEX = re.compile(r'"function":\s*"([^"]+)"')
-DECOMPILED_VAR_REGEX = re.compile(r"@@VAR_\d+@@[^@]+@@([_a-zA-Z0-9]+)")
+# Match variable references in decompiled code.
+# - Capture groups: (var_id, decompiled_var_name, original_var_name)
+DECOMPILED_VAR_REGEX = re.compile(r"@@VAR_(\d+)@@([^@]+)@@([_a-zA-Z0-9]+)")
+# Match register allocation annotations in decompiled code.
 DECOMPILED_REG_ALLOC_REGEX = re.compile(r"@<[a-z0-9]+>")
+# Match preprocessor comments.
 LINE_CONTROL_REGEX = re.compile(r'^#[^\n]*\n', flags=re.MULTILINE)  # also chomp the newline symbol
+
+IDENTIFIER_CHARS = string.ascii_letters + string.digits + "_"
 
 
 @flutes.exception_wrapper(exception_handler)
@@ -258,8 +270,11 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             # Collect decompiled functions with matching original code.
             with json_path.open("r") as f:
                 decompiled_json = [line for line in f if line]  # don't decode, as we only need the function name
-            decompiled_funcs: Dict[str, str] = {}
+            decompiled_funcs: Dict[str, str] = {}  # (func_name) -> decompiled_code
+            decompiled_var_names: Dict[str, Dict[str, Tuple[str, str]]] = {} \
+                # (func_name) -> (var_id) -> (decomp_name, orig_name)
             for line_num, j in enumerate(decompiled_json):
+                # Find function name from JSON line without parsing.
                 match = JSON_FUNC_NAME_REGEX.search(j)
                 assert match is not None
                 func_name = match.group(1)
@@ -268,10 +283,30 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
 
                 decompiled_data = json.loads(j)
                 decompiled_code = decompiled_data["raw_code"]
-                # Remove irregularities in decompiled code:
-                # - Replace `@@VAR` with developer-assigned names.
+                # Store the variable names used in the function.
+                # We use a random string as the identifier prefix. Sadly, C89 (and `pycparser`) doesn't support Unicode.
+                for length in range(3, 10 + 1):
+                    var_identifier_prefix = "v" + "".join(random.choices(string.ascii_lowercase, k=length))
+                    if var_identifier_prefix not in decompiled_code:
+                        break
+                else:
+                    # No way this is happening, right?
+                    flutes.log(f"{repo_full_name}: Could not find valid identifier prefix for "
+                               f"{func_name} in {code_path} ({sha})", "error")
+                    continue
+                variables: Dict[str, Tuple[str, str]] = {}  # (var_id) -> (decompiled_name, original_name)
+                for match in DECOMPILED_VAR_REGEX.finditer(decompiled_code):
+                    var_id, decompiled_name, original_name = match.groups()
+                    var_id = f"{var_identifier_prefix}_{var_id}"
+                    if var_id in variables:
+                        assert variables[var_id] == (decompiled_name, original_name)
+                    else:
+                        variables[var_id] = (decompiled_name, original_name)
+                decompiled_var_names[func_name] = variables
+                # Remove irregularities in decompiled code to make the it parsable:
+                # - Replace `@@VAR` with special identifiers (literally anything identifier that doesn't clash).
                 # - Remove the register allocation indication in `var@<rdi>`.
-                decompiled_code = DECOMPILED_VAR_REGEX.sub(r"\1", decompiled_code)
+                decompiled_code = DECOMPILED_VAR_REGEX.sub(rf"{var_identifier_prefix}_\1", decompiled_code)
                 decompiled_code = DECOMPILED_REG_ALLOC_REGEX.sub("", decompiled_code)
                 if func_name.startswith("_"):
                     # For some reason, Hexrays would chomp off one leading underscore from function names in their
@@ -323,6 +358,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                         original_ast_json, original_func_tokens = serialize(original_func_ast, original_tokens)
                         matched_func = MatchedFunction(
                             file_path=code_path, binary_hash=sha, func_name=func_name,
+                            variable_names=decompiled_var_names[func_name],
                             original_tokens=original_func_tokens, decompiled_tokens=decompiled_func_tokens,
                             original_ast_json=original_ast_json, decompiled_ast_json=None)
                         matched_functions.append(matched_func)
@@ -340,6 +376,7 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                     decompiled_ast_json, decompiled_func_tokens = serialize(decompiled_func_ast, decompiled_tokens)
                     matched_func = MatchedFunction(
                         file_path=code_path, binary_hash=sha, func_name=func_name,
+                        variable_names=decompiled_var_names[func_name],
                         original_tokens=original_func_tokens, decompiled_tokens=decompiled_func_tokens,
                         original_ast_json=original_ast_json, decompiled_ast_json=decompiled_ast_json)
                     matched_functions.append(matched_func)
@@ -416,11 +453,12 @@ class DBStats(NamedTuple):
 
 
 def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: Optional[str] = None,
-               cache_path: Optional[str] = None) -> Tuple[Iterator[RepoInfo], DBStats]:
+               cache_path: Optional[str] = None, force_reprocess: bool = False) -> Tuple[Iterator[RepoInfo], DBStats]:
     repo_count = func_count = func_without_ast_count = 0
     db_entries: Set[Tuple[str, str]] = set()
     for entry in db.collection.find():
-        db_entries.add((entry["repo_owner"], entry["repo_name"]))
+        if not force_reprocess:
+            db_entries.add((entry["repo_owner"], entry["repo_name"]))
         repo_count += 1
         func_count += entry["funcs_matched"]
         func_without_ast_count += entry["funcs_matched_without_ast"]
@@ -460,7 +498,8 @@ def main() -> None:
         proxy = manager.proxy
     with flutes.safe_pool(args.n_procs, closing=[db, manager]) as pool:
         iterator, stats = iter_repos(
-            db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path)
+            db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path,
+            force_reprocess=args.force_reprocess)
         match_fn: Callable[[RepoInfo], Result] = functools.partial(
             match_functions,
             archive_folder=args.archive_dir, temp_folder=args.temp_dir, decompile_folder=args.decompile_dir,
