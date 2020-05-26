@@ -3,6 +3,7 @@ import functools
 import multiprocessing as mp
 import os
 import pickle
+import queue
 import time
 from typing import Dict, List, Optional
 
@@ -69,8 +70,10 @@ def worker(q: mp.Queue):
 
 def read_queue(makefiles: List[ghcc.RepoDB.MakefileEntry], q: 'mp.Queue[ghcc.RepoDB.MakefileEntry]'):
     try:
-        while not q.empty():
-            makefiles.append(q.get())
+        while True:
+            makefiles.append(q.get_nowait())
+    except queue.Empty:
+        pass  # queue empty, wait until next round
     except (OSError, ValueError):
         pass  # data in queue could be corrupt, e.g. if worker process is terminated while enqueueing
 
@@ -88,12 +91,19 @@ def main():
         while process.is_alive():
             time.sleep(2)  # no rush
             cur_time = time.time()
+            # Get stuff out of the queue before possible termination -- otherwise it might deadlock.
+            # See https://docs.python.org/3/library/multiprocessing.html#multiprocessing-programming,
+            # the "Joining processes that use queues" section.
+            read_queue(makefiles, q)
+            # Note that it's still possible to have deadlocks if the child process pushed new elements into the queue
+            # after we read and before we terminate. A better solution would be to send a message to the child and ask
+            # it to quit, and only terminate when it doesn't respond. However, this current implementation is probably
+            # good enough for most cases.
             if cur_time - start_time > args.compile_timeout + TIMEOUT_TOLERANCE:
                 process.terminate()
                 print(f"Timeout ({args.compile_timeout}s), killed", flush=True)
                 ghcc.clean(REPO_PATH)  # clean up after the worker process
                 break
-            read_queue(makefiles, q)
         read_queue(makefiles, q)
 
     flutes.kill_proc_tree(os.getpid(), including_parent=False)  # make sure all subprocesses are dead

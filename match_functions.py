@@ -43,7 +43,7 @@ class Arguments(argtyped.Arguments):
     skip_to: Optional[str]  # skip to specified repository
     repo_binary_info_cache_path: Optional[str]  # if specified, load/save repo_binaries instead of loading from DB
     verbose: Switch = False
-    preprocess_timeout: Optional[int] = 120
+    preprocess_timeout: Optional[int] = 600
     show_progress: Switch = False  # show a progress bar for each worker process; large overhead
     force_reprocess: Switch = False  # also process repos that are recorded as processed in DB
 
@@ -223,6 +223,8 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
         gcc_flags = f"-E -nostdlib -I/usr/src/libc"
         directory_mapping = {ghcc.parse.FAKE_LIBC_PATH: "/usr/src/libc"}
 
+    if progress_bar is not None:
+        progress_bar.update(postfix={"status": "preprocessing"})
     makefiles = ghcc.docker_batch_compile(
         str(repo_binary_dir), str(repo_src_path), compile_timeout=preprocess_timeout,
         gcc_override_flags=gcc_flags, use_makefile_info_pkl=True, directory_mapping=directory_mapping,
