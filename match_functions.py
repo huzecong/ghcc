@@ -259,7 +259,8 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
             preprocessed_original_code[sha] = code
             try:
                 original_ast: ASTNode = parser.parse(code, filename=os.path.join(repo_full_name, path))
-            except pycparser.c_parser.ParseError as e:
+            except (pycparser.c_parser.ParseError, AssertionError) as e:
+                # For some reason `pycparser` uses `assert`s in places where there should have been a check.
                 flutes.log(f"{repo_full_name}: Parser error when processing file "
                            f"{code_path} ({sha}): {str(e)}", "error")
                 has_error = True
@@ -283,7 +284,12 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
                 if func_name not in function_asts:
                     continue
 
-                decompiled_data = json.loads(j)
+                try:
+                    decompiled_data = json.loads(j)
+                except json.JSONDecodeError as e:
+                    flutes.log(f"{repo_full_name}: Decode error when reading JSON file at {json_path}: "
+                               f"{str(e)}", "error")
+                    continue
                 decompiled_code = decompiled_data["raw_code"]
                 # Store the variable names used in the function.
                 # We use a random string as the identifier prefix. Sadly, C89 (and `pycparser`) doesn't support Unicode.

@@ -71,7 +71,7 @@ def ast_to_dict(root: ASTNode, tokens: Optional[List[Token]] = None) -> JSONNode
         tokens_ = tokens  # so that the `find_token` function type-checks
         line_range: Dict[int, Tuple[int, int]] = {}
 
-    def find_token(line: int, column: int) -> int:
+    def find_token(line: int, column: int) -> Optional[int]:
         if line not in line_range:
             l = find_first(tokens_, lambda tok: line <= tok.line)
             r = find_first(tokens_, lambda tok: line < tok.line)
@@ -79,7 +79,10 @@ def ast_to_dict(root: ASTNode, tokens: Optional[List[Token]] = None) -> JSONNode
         else:
             l, r = line_range[line]
         ret = find_first(tokens_[l:r], lambda tok: column < tok.column) + l - 1
-        assert ret >= 0
+        if ret < 0:
+            # In rare cases `ret` where `l == 0` and the first code token has `column > 1`, the coordinates of the root
+            # node might still have `column == 1`, which results in `ret == -1`.
+            return None
         return ret
 
     def traverse(node: ASTNode, depth: int = 0) -> JSONNode:
