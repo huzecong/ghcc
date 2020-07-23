@@ -191,11 +191,12 @@ def parse_decompiled_code(code: str, lexer: LexerWrapper, parser: CParser,
                 # 1. The type is the first ID-type token before the reported token (`type token`). It might not
                 #    be the one immediately in front (for example, `(type) token`， `type *token`).
                 # 2. The type is the token itself. This is rare and only happens in a situation like:
-                #      `int func(const token var)`
+                #      `int func(const token var)`  or  `int func(int a, token b)`
                 #    Replacing `const` with any combination of type qualifiers also works.
                 if (error_token_idx > 0 and
                         tokens[error_token_idx - 1].type in ["CONST", "VOLATILE", "RESTRICT",
-                                                             "__CONST", "__RESTRICT", "__EXTENSION__"]):
+                                                             "__CONST", "__RESTRICT", "__EXTENSION__",
+                                                             "COMMA"]):
                     type_token = tokens[error_token_idx]
                 else:
                     type_token = next(

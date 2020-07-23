@@ -1,9 +1,7 @@
 argtyped
-flutes
+flutes >= 0.2.0
 mypy_extensions
-psutil
 pycparser >= 2.20
 pymongo
-tenacity
 termcolor
 tqdm

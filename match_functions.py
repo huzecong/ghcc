@@ -78,7 +78,6 @@ class Result(NamedTuple):
     funcs_without_asts: int
 
 
-# Theoretically we also need `_fake_gcc_ext.h`, but the code probably has `#include`'s.
 DECOMPILED_CODE_HEADER = r"""
 #define __fastcall
 #define __noreturn
@@ -103,6 +102,8 @@ typedef int WCHAR;
 typedef int gcc_va_list;
 typedef int (*__compar_fn_t)(const void *, const void *);
 """
+with open(os.path.join(ghcc.parse.FAKE_LIBC_PATH, "_fake_gcc_ext.h")) as f:
+    DECOMPILED_CODE_HEADER += f.read()
 
 
 def exception_handler(e: Exception, repo_info: RepoInfo):
@@ -195,7 +196,6 @@ def match_functions(repo_info: RepoInfo, archive_folder: str, temp_folder: str, 
         worker_id = flutes.get_worker_id()
         process_name = f"Worker {worker_id}" if worker_id is not None else "Main Process"
         progress_bar.new(total=total_files, desc=process_name + f" [{repo_full_name}]")
-        flutes.set_console_logging_function(progress_bar.write)
 
     flutes.log(f"Begin processing {repo_full_name} ({total_files} files)")
 
@@ -420,7 +420,7 @@ def _iter_repos(db_entries: Set[Tuple[str, str]], max_count: Optional[int] = Non
             return repo_binaries
 
         repo_binaries = _get_repo_binaries_info()
-        repo_entries: Iterator[ghcc.RepoDB.Entry] = repo_db.safe_iter(static=True)
+        repo_entries: Iterator[ghcc.RepoDB.Entry] = repo_db.safe_iter(batch_size=10000, static=True)
         if skip_to is not None:
             skip_to_repo = tuple(skip_to.split("/"))
             repo_entries = flutes.drop_until(
@@ -463,15 +463,15 @@ class DBStats(NamedTuple):
 def iter_repos(db: ghcc.MatchFuncDB, max_count: Optional[int] = None, skip_to: Optional[str] = None,
                cache_path: Optional[str] = None, force_reprocess: bool = False) -> Tuple[Iterator[RepoInfo], DBStats]:
     repo_count = func_count = func_without_ast_count = 0
-    db_entries: Set[Tuple[str, str]] = set()
+    processed_db_entries: Set[Tuple[str, str]] = set()
     for entry in db.collection.find():
-        if not force_reprocess:
-            db_entries.add((entry["repo_owner"], entry["repo_name"]))
+        if not force_reprocess and entry['funcs_matched_without_ast'] == 0:
+            processed_db_entries.add((entry["repo_owner"], entry["repo_name"]))
         repo_count += 1
         func_count += entry["funcs_matched"]
         func_without_ast_count += entry["funcs_matched_without_ast"]
 
-    iterator = _iter_repos(db_entries, max_count, skip_to, cache_path)
+    iterator = _iter_repos(processed_db_entries, max_count, skip_to, cache_path)
     stats = DBStats(repo_count, func_count, func_without_ast_count)
     return iterator, stats
 
@@ -500,10 +500,8 @@ def main() -> None:
     db = ghcc.MatchFuncDB()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    manager = proxy = None
-    if args.show_progress:
-        manager = flutes.ProgressBarManager(bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]")
-        proxy = manager.proxy
+    manager = flutes.ProgressBarManager(
+        verbose=args.show_progress, bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}{postfix}]")
     with flutes.safe_pool(args.n_procs, closing=[db, manager]) as pool:
         iterator, stats = iter_repos(
             db, args.max_repos, skip_to=args.skip_to, cache_path=args.repo_binary_info_cache_path,
@@ -512,7 +510,7 @@ def main() -> None:
             match_functions,
             archive_folder=args.archive_dir, temp_folder=args.temp_dir, decompile_folder=args.decompile_dir,
             use_fake_libc_headers=args.use_fake_libc_headers, preprocess_timeout=args.preprocess_timeout,
-            progress_bar=proxy)
+            progress_bar=manager.proxy)
 
         repo_count = stats.repo_count
         func_count = stats.func_count
